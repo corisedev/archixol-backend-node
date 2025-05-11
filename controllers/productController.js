@@ -8,9 +8,8 @@ const mongoose = require("mongoose");
 const fs = require("fs");
 const path = require("path");
 
-// @desc    Get all products for a supplier
-// @route   GET /supplier/get_all_products
-// @access  Private (Supplier Only)
+// controllers/productController.js - Modify the getAllProducts function to include collection names
+
 exports.getAllProducts = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -45,6 +44,30 @@ exports.getAllProducts = async (req, res) => {
         vendor.vendor_name || `${vendor.first_name} ${vendor.last_name}`;
     });
 
+    // Collect all collection IDs referenced in products
+    const collectionIds = new Set();
+    products.forEach((product) => {
+      if (product.search_collection && product.search_collection.length > 0) {
+        product.search_collection.forEach((collId) => {
+          if (mongoose.Types.ObjectId.isValid(collId)) {
+            collectionIds.add(collId.toString());
+          }
+        });
+      }
+    });
+
+    // Get all relevant collections in one query
+    const collections = await Collection.find({
+      _id: { $in: Array.from(collectionIds) },
+      status: { $ne: "archived" },
+    }).select("_id title");
+
+    // Create a map of collection IDs to collection names for quick lookup
+    const collectionMap = {};
+    collections.forEach((collection) => {
+      collectionMap[collection._id.toString()] = collection.title;
+    });
+
     // Format products for response and add vendor_name
     const productsList = products.map((product) => {
       const productObj = product.toObject();
@@ -59,6 +82,22 @@ exports.getAllProducts = async (req, res) => {
         productObj.vendor_name = vendorMap[product.search_vendor.toString()];
       } else {
         productObj.vendor_name = ""; // Default empty string if no vendor found
+      }
+
+      // Transform search_collection from array of IDs to array of titles
+      if (
+        productObj.search_collection &&
+        productObj.search_collection.length > 0
+      ) {
+        productObj.search_collection = productObj.search_collection
+          .map((collId) => {
+            const collIdStr = collId.toString();
+            if (collectionMap[collIdStr]) {
+              return collectionMap[collIdStr]; // Just return the title
+            }
+            return null;
+          })
+          .filter((title) => title !== null); // Remove null items (collections that weren't found)
       }
 
       return productObj;
@@ -138,18 +177,27 @@ exports.getProduct = async (req, res) => {
         }).select("_id title");
 
         if (collections && collections.length > 0) {
+          // Transform search_collection to only contain collection titles
+          productObj.search_collection = collections.map(
+            (collection) => collection.title
+          );
+
+          // Keep collections as is for backward compatibility
           productObj.collections = collections.map((collection) => ({
             id: collection._id,
             title: collection.title,
           }));
         } else {
+          productObj.search_collection = [];
           productObj.collections = [];
         }
       } catch (collectionError) {
         console.error("Error fetching collections:", collectionError);
+        productObj.search_collection = [];
         productObj.collections = [];
       }
     } else {
+      productObj.search_collection = [];
       productObj.collections = [];
     }
 
@@ -165,6 +213,8 @@ exports.getProduct = async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 };
+
+// controllers/productController.js - updated createProduct and updateProduct functions
 
 // @desc    Create a new product
 // @route   POST /supplier/create_product
@@ -225,23 +275,56 @@ exports.createProduct = async (req, res) => {
       });
     }
 
-    // Process collection list
+    // Process collection list - handle collection names and objectIds
     let processedCollectionList = [];
+    let collectionNames = [];
+    let collectionIds = [];
+
     if (search_collection) {
       if (Array.isArray(search_collection)) {
-        // Process array
-        processedCollectionList = search_collection
-          .map((coll) => {
-            if (typeof coll === "object") {
-              return coll.id || coll._id;
+        // Process array - extract both ObjectIds and collection names
+        search_collection.forEach((coll) => {
+          if (typeof coll === "object" && coll !== null) {
+            // Handle object with id/ObjectId
+            const id = coll.id || coll._id;
+            if (id && mongoose.Types.ObjectId.isValid(id)) {
+              collectionIds.push(id);
             }
-            return coll;
-          })
-          .filter((id) => id);
+          } else if (typeof coll === "string") {
+            // Check if it's a valid ObjectId
+            if (mongoose.Types.ObjectId.isValid(coll)) {
+              collectionIds.push(coll);
+            } else {
+              // It's likely a collection name
+              collectionNames.push(coll);
+            }
+          }
+        });
       } else if (typeof search_collection === "string") {
-        processedCollectionList = [search_collection];
+        // Single string case
+        if (mongoose.Types.ObjectId.isValid(search_collection)) {
+          collectionIds.push(search_collection);
+        } else {
+          collectionNames.push(search_collection);
+        }
       }
     }
+
+    // Now find collections by name and add their IDs to collectionIds
+    if (collectionNames.length > 0) {
+      const foundCollections = await Collection.find({
+        title: { $in: collectionNames },
+        supplier_id: userId,
+        status: { $ne: "archived" },
+      });
+
+      foundCollections.forEach((collection) => {
+        collectionIds.push(collection._id);
+      });
+    }
+
+    // Final processed collection list contains unique valid ObjectIds
+    processedCollectionList = [...new Set(collectionIds)];
 
     // Create new product
     const productData = {
@@ -272,7 +355,8 @@ exports.createProduct = async (req, res) => {
       search_collection: processedCollectionList,
       search_tags: search_tags || [],
       page_title: page_title || title, // Default to title if not provided
-      meta_description: meta_description || description.substring(0, 160) || "", // First 160 chars of description
+      meta_description:
+        meta_description || (description ? description.substring(0, 160) : ""), // First 160 chars of description
     };
 
     // Calculate profit and margin
@@ -373,21 +457,53 @@ exports.updateProduct = async (req, res) => {
 
     // Process new collection list
     let newCollectionList = [];
+    let collectionNames = [];
+    let collectionIds = [];
+
     if (search_collection !== undefined) {
       if (Array.isArray(search_collection)) {
-        // Process the array directly
-        newCollectionList = search_collection
-          .map((coll) => {
-            if (typeof coll === "object") {
-              return coll.id || coll._id;
+        // Process array - extract both ObjectIds and collection names
+        search_collection.forEach((coll) => {
+          if (typeof coll === "object" && coll !== null) {
+            // Handle object with id/ObjectId
+            const id = coll.id || coll._id;
+            if (id && mongoose.Types.ObjectId.isValid(id)) {
+              collectionIds.push(id);
             }
-            return coll;
-          })
-          .filter((id) => id);
+          } else if (typeof coll === "string") {
+            // Check if it's a valid ObjectId
+            if (mongoose.Types.ObjectId.isValid(coll)) {
+              collectionIds.push(coll);
+            } else {
+              // It's likely a collection name
+              collectionNames.push(coll);
+            }
+          }
+        });
       } else if (typeof search_collection === "string") {
-        // Handle string case (single ID)
-        newCollectionList = [search_collection];
+        // Single string case
+        if (mongoose.Types.ObjectId.isValid(search_collection)) {
+          collectionIds.push(search_collection);
+        } else {
+          collectionNames.push(search_collection);
+        }
       }
+
+      // Now find collections by name and add their IDs to collectionIds
+      if (collectionNames.length > 0) {
+        const foundCollections = await Collection.find({
+          title: { $in: collectionNames },
+          supplier_id: userId,
+          status: { $ne: "archived" },
+        });
+
+        foundCollections.forEach((collection) => {
+          collectionIds.push(collection._id);
+        });
+      }
+
+      // Final processed collection list contains unique valid ObjectIds
+      newCollectionList = [...new Set(collectionIds)];
 
       // Update the product's search_collection field
       product.search_collection = newCollectionList;
