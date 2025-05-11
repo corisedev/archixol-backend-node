@@ -95,6 +95,18 @@ exports.processCollectionData = (req, res, next) => {
       // Parse the decrypted data
       const parsedData = JSON.parse(decryptedData);
 
+      // Process product_list if it exists to ensure it's an array of IDs
+      if (parsedData.product_list && Array.isArray(parsedData.product_list)) {
+        parsedData.product_list = parsedData.product_list
+          .map((product) => {
+            if (typeof product === "object") {
+              return product.id || product._id;
+            }
+            return product;
+          })
+          .filter((id) => id);
+      }
+
       // Add newly uploaded file paths
       const newUploaded = [];
       if (req.files && req.files.length > 0) {

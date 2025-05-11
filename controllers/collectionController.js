@@ -139,6 +139,19 @@ exports.createCollection = async (req, res) => {
       });
     }
 
+    // Process the product list to extract just the IDs
+    let processedProductList = [];
+    if (product_list && Array.isArray(product_list)) {
+      // Extract just the product IDs from the product objects
+      processedProductList = product_list.map((product) =>
+        typeof product === "object" && product.id
+          ? product.id
+          : typeof product === "object" && product._id
+          ? product._id
+          : product
+      );
+    }
+
     // Create new collection
     const collectionData = {
       supplier_id: userId,
@@ -147,7 +160,7 @@ exports.createCollection = async (req, res) => {
       description: description || "",
       collection_type: collection_type || "manual",
       collection_images: collection_images || [],
-      product_list: product_list || [],
+      product_list: processedProductList, // Use the processed product IDs
       smart_operator: smart_operator || "all",
       smart_conditions: smart_conditions || [],
     };
@@ -254,13 +267,31 @@ exports.updateCollection = async (req, res) => {
       collection.url_handle = newUrlHandle;
     }
 
+    // Process the product list to extract just the IDs
+    if (product_list !== undefined) {
+      let processedProductList = [];
+
+      if (Array.isArray(product_list)) {
+        // Extract just the product IDs from the product objects
+        processedProductList = product_list
+          .map((product) => {
+            if (typeof product === "object") {
+              return product.id || product._id;
+            }
+            return product;
+          })
+          .filter((id) => id); // Filter out any undefined or null values
+      }
+
+      collection.product_list = processedProductList;
+    }
+
     // Update other fields if provided
     if (description !== undefined) collection.description = description;
     if (collection_type !== undefined)
       collection.collection_type = collection_type;
     if (collection_images !== undefined)
       collection.collection_images = collection_images;
-    if (product_list !== undefined) collection.product_list = product_list;
     if (smart_operator !== undefined)
       collection.smart_operator = smart_operator;
     if (smart_conditions !== undefined)
