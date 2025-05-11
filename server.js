@@ -21,12 +21,15 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // Routes
 app.use("/account", require("./routes/authRoutes"));
+app.use("/account", require("./routes/contactSupportRoutes"));
 app.use("/service", require("./routes/serviceRoutes"));
 app.use("/profile", require("./routes/profileRoutes"));
 app.use("/company", require("./routes/companyRoutes"));
 app.use("/uploads/profile", require("./routes/profileUploadRoutes"));
 app.use("/uploads/service", require("./routes/serviceUploadRoutes"));
 app.use("/public", require("./routes/publicProfileRoutes"));
+app.use("/supplier", require("./routes/supplierRoutes"));
+app.use("/supplier", require("./routes/settingsRoutes"));
 
 // Default route
 app.get("/", (req, res) => {
