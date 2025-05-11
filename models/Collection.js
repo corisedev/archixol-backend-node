@@ -64,6 +64,15 @@ const CollectionSchema = new mongoose.Schema({
     enum: ["active", "draft", "archived"],
     default: "active",
   },
+  // Add page_title and meta_description fields
+  page_title: {
+    type: String,
+    default: "",
+  },
+  meta_description: {
+    type: String,
+    default: "",
+  },
   createdAt: {
     type: Date,
     default: Date.now,

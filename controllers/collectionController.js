@@ -118,6 +118,8 @@ exports.createCollection = async (req, res) => {
       product_list,
       smart_operator,
       smart_conditions,
+      page_title,
+      meta_description,
     } = req.body;
 
     // Validate required fields
@@ -143,13 +145,14 @@ exports.createCollection = async (req, res) => {
     let processedProductList = [];
     if (product_list && Array.isArray(product_list)) {
       // Extract just the product IDs from the product objects
-      processedProductList = product_list.map((product) =>
-        typeof product === "object" && product.id
-          ? product.id
-          : typeof product === "object" && product._id
-          ? product._id
-          : product
-      );
+      processedProductList = product_list
+        .map((product) => {
+          if (typeof product === "object") {
+            return product.id || product._id;
+          }
+          return product;
+        })
+        .filter((id) => id); // Filter out any undefined or null values
     }
 
     // Create new collection
@@ -163,6 +166,8 @@ exports.createCollection = async (req, res) => {
       product_list: processedProductList, // Use the processed product IDs
       smart_operator: smart_operator || "all",
       smart_conditions: smart_conditions || [],
+      page_title: page_title || title, // Default to title if not provided
+      meta_description: meta_description || description || "", // Default to description if not provided
     };
 
     // Create collection
@@ -230,6 +235,8 @@ exports.updateCollection = async (req, res) => {
       product_list,
       smart_operator,
       smart_conditions,
+      page_title,
+      meta_description,
     } = req.body;
 
     if (!collection_id) {
@@ -296,6 +303,9 @@ exports.updateCollection = async (req, res) => {
       collection.smart_operator = smart_operator;
     if (smart_conditions !== undefined)
       collection.smart_conditions = smart_conditions;
+    if (page_title !== undefined) collection.page_title = page_title;
+    if (meta_description !== undefined)
+      collection.meta_description = meta_description;
 
     // Save updated collection
     await collection.save();
