@@ -67,11 +67,11 @@ exports.getCollection = async (req, res) => {
     collectionObj.id = collectionObj._id;
     delete collectionObj._id;
 
-    // Get product details for product_list
+    // Get product details for product_list, filtering out archived products
     if (collection.product_list && collection.product_list.length > 0) {
       const products = await Product.find({
         _id: { $in: collection.product_list },
-        status: { $ne: "archived" },
+        status: { $ne: "archived" }, // Only get active products
       }).select("title price _id media");
 
       // Format products
@@ -172,6 +172,14 @@ exports.createCollection = async (req, res) => {
 
     // Create collection
     const collection = await Collection.create(collectionData);
+
+    // Now update all products to add this collection to their search_collection field
+    if (processedProductList.length > 0) {
+      await Product.updateMany(
+        { _id: { $in: processedProductList } },
+        { $addToSet: { search_collection: collection._id } }
+      );
+    }
 
     // Format for response
     const collectionObj = collection.toObject();
@@ -274,10 +282,14 @@ exports.updateCollection = async (req, res) => {
       collection.url_handle = newUrlHandle;
     }
 
-    // Process the product list to extract just the IDs
-    if (product_list !== undefined) {
-      let processedProductList = [];
+    // Store the old product list for comparison
+    const oldProductList = [...collection.product_list].map((id) =>
+      id.toString()
+    );
 
+    // Process the product list to extract just the IDs
+    let processedProductList = [];
+    if (product_list !== undefined) {
       if (Array.isArray(product_list)) {
         // Extract just the product IDs from the product objects
         processedProductList = product_list
@@ -291,7 +303,22 @@ exports.updateCollection = async (req, res) => {
       }
 
       collection.product_list = processedProductList;
+    } else {
+      processedProductList = oldProductList;
     }
+
+    // Convert to array of strings for easier comparison
+    const newProductList = processedProductList.map((id) => id.toString());
+
+    // Find products to add the collection to
+    const productsToAdd = newProductList.filter(
+      (id) => !oldProductList.includes(id)
+    );
+
+    // Find products to remove the collection from
+    const productsToRemove = oldProductList.filter(
+      (id) => !newProductList.includes(id)
+    );
 
     // Update other fields if provided
     if (description !== undefined) collection.description = description;
@@ -309,6 +336,22 @@ exports.updateCollection = async (req, res) => {
 
     // Save updated collection
     await collection.save();
+
+    // Update products to add the collection reference
+    if (productsToAdd.length > 0) {
+      await Product.updateMany(
+        { _id: { $in: productsToAdd } },
+        { $addToSet: { search_collection: collection_id } }
+      );
+    }
+
+    // Update products to remove the collection reference
+    if (productsToRemove.length > 0) {
+      await Product.updateMany(
+        { _id: { $in: productsToRemove } },
+        { $pull: { search_collection: collection_id } }
+      );
+    }
 
     // Format for response
     const collectionObj = collection.toObject();
@@ -378,9 +421,20 @@ exports.deleteCollection = async (req, res) => {
       return res.status(404).json({ error: "Collection not found" });
     }
 
+    // Get the product list before archiving
+    const productList = collection.product_list;
+
     // Soft delete by setting status to archived
     collection.status = "archived";
     await collection.save();
+
+    // Update all products to remove this collection from their search_collection field
+    if (productList && productList.length > 0) {
+      await Product.updateMany(
+        { _id: { $in: productList } },
+        { $pull: { search_collection: collection_id } }
+      );
+    }
 
     const responseData = {
       message: "Collection deleted successfully",

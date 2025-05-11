@@ -128,6 +128,30 @@ exports.getProduct = async (req, res) => {
       productObj.vendor_name = ""; // Default empty string if no search_vendor field
     }
 
+    // Look up collection information if product has search_collection field
+    if (product.search_collection && product.search_collection.length > 0) {
+      try {
+        const collections = await Collection.find({
+          _id: { $in: product.search_collection },
+          status: { $ne: "archived" },
+        }).select("_id title");
+
+        if (collections && collections.length > 0) {
+          productObj.collections = collections.map((collection) => ({
+            id: collection._id,
+            title: collection.title,
+          }));
+        } else {
+          productObj.collections = [];
+        }
+      } catch (collectionError) {
+        console.error("Error fetching collections:", collectionError);
+        productObj.collections = [];
+      }
+    } else {
+      productObj.collections = [];
+    }
+
     const responseData = {
       message: "Product retrieved successfully",
       product: productObj,
@@ -200,6 +224,25 @@ exports.createProduct = async (req, res) => {
       });
     }
 
+    // Process collection list
+    let processedCollectionList = [];
+    if (search_collection) {
+      if (Array.isArray(search_collection)) {
+        // Process array
+        processedCollectionList = search_collection
+          .map((coll) => {
+            if (typeof coll === "object") {
+              return coll.id || coll._id;
+            }
+            return coll;
+          })
+          .filter((id) => id);
+      } else if (typeof search_collection === "string") {
+        // Process single string
+        processedCollectionList = [search_collection];
+      }
+    }
+
     // Create new product
     const productData = {
       supplier_id: userId,
@@ -226,7 +269,7 @@ exports.createProduct = async (req, res) => {
       continue_out_of_stock: continue_out_of_stock || false,
       address: address || "",
       search_vendor: search_vendor || "",
-      search_collection: search_collection || [],
+      search_collection: processedCollectionList,
       search_tags: search_tags || [],
       page_title: page_title || title, // Default to title if not provided
       meta_description: meta_description || description.substring(0, 160) || "", // First 160 chars of description
@@ -240,6 +283,14 @@ exports.createProduct = async (req, res) => {
 
     // Create product
     const product = await Product.create(productData);
+
+    // Update collections to add this product
+    if (processedCollectionList.length > 0) {
+      await Collection.updateMany(
+        { _id: { $in: processedCollectionList } },
+        { $addToSet: { product_list: product._id } }
+      );
+    }
 
     // Format for response
     const productObj = product.toObject();
@@ -272,7 +323,8 @@ exports.createProduct = async (req, res) => {
 exports.updateProduct = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { product_id, media_urls, ...updateData } = req.body;
+    const { product_id, media_urls, search_collection, ...updateData } =
+      req.body;
 
     if (!product_id) {
       return res.status(400).json({ error: "Product ID is required" });
@@ -314,9 +366,51 @@ exports.updateProduct = async (req, res) => {
       product.media = media_urls;
     }
 
+    // Store the old collection list for comparison
+    const oldCollectionList = [...product.search_collection].map((id) =>
+      id.toString()
+    );
+
+    // Process new collection list
+    let newCollectionList = [];
+    if (search_collection !== undefined) {
+      if (Array.isArray(search_collection)) {
+        // Process the array directly
+        newCollectionList = search_collection
+          .map((coll) => {
+            if (typeof coll === "object") {
+              return coll.id || coll._id;
+            }
+            return coll;
+          })
+          .filter((id) => id);
+      } else if (typeof search_collection === "string") {
+        // Handle string case (single ID)
+        newCollectionList = [search_collection];
+      }
+
+      // Update the product's search_collection field
+      product.search_collection = newCollectionList;
+    } else {
+      newCollectionList = oldCollectionList;
+    }
+
+    // Convert to array of strings for easier comparison
+    const newCollectionListStr = newCollectionList.map((id) => id.toString());
+
+    // Find collections to add this product to
+    const collectionsToAdd = newCollectionListStr.filter(
+      (id) => !oldCollectionList.includes(id)
+    );
+
+    // Find collections to remove this product from
+    const collectionsToRemove = oldCollectionList.filter(
+      (id) => !newCollectionListStr.includes(id)
+    );
+
     // Update fields
     Object.keys(updateData).forEach((key) => {
-      if (key !== "media") {
+      if (key !== "media" && key !== "search_collection") {
         // Don't overwrite media if we've already updated it
         // Convert string numbers to actual numbers
         if (
@@ -343,6 +437,22 @@ exports.updateProduct = async (req, res) => {
 
     // Save updated product
     await product.save();
+
+    // Update collections to add this product
+    if (collectionsToAdd.length > 0) {
+      await Collection.updateMany(
+        { _id: { $in: collectionsToAdd } },
+        { $addToSet: { product_list: product_id } }
+      );
+    }
+
+    // Update collections to remove this product
+    if (collectionsToRemove.length > 0) {
+      await Collection.updateMany(
+        { _id: { $in: collectionsToRemove } },
+        { $pull: { product_list: product_id } }
+      );
+    }
 
     // Format for response
     const productObj = product.toObject();
@@ -391,9 +501,20 @@ exports.deleteProduct = async (req, res) => {
       return res.status(404).json({ error: "Product not found" });
     }
 
+    // Get the collection list before archiving
+    const collectionList = product.search_collection;
+
     // Soft delete by setting status to archived
     product.status = "archived";
     await product.save();
+
+    // Update all collections to remove this product
+    if (collectionList && collectionList.length > 0) {
+      await Collection.updateMany(
+        { _id: { $in: collectionList } },
+        { $pull: { product_list: product_id } }
+      );
+    }
 
     const responseData = {
       message: "Product deleted successfully",

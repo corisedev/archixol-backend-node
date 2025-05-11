@@ -122,7 +122,8 @@ const ProductSchema = new mongoose.Schema({
     default: "",
   },
   search_collection: {
-    type: [String],
+    type: [mongoose.Schema.Types.ObjectId],
+    ref: "Collection",
     default: [],
   },
   search_tags: {
