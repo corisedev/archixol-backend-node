@@ -21,17 +21,99 @@ exports.getAllOrders = async (req, res) => {
       supplier_id: userId,
     }).sort({ createdAt: -1 }); // Latest first
 
-    // Format orders for response
-    const ordersList = orders.map((order) => {
-      const orderObj = order.toObject();
-      orderObj.id = orderObj._id;
-      delete orderObj._id;
-      return orderObj;
-    });
+    // Format orders for response and fetch customer names
+    const ordersList = await Promise.all(
+      orders.map(async (order) => {
+        const orderObj = order.toObject();
+        orderObj.id = orderObj._id;
+        delete orderObj._id;
+
+        // Add customer name
+        try {
+          // First try to find from Customer model (preferred for orders)
+          const customer = await Customer.findById(order.customer_id);
+          if (customer) {
+            orderObj.customer_name =
+              `${customer.first_name} ${customer.last_name}`.trim();
+          } else {
+            // If not found in Customer model, try User model as fallback
+            const user = await User.findById(order.customer_id);
+            if (user) {
+              orderObj.customer_name = user.username || "Unknown";
+            } else {
+              orderObj.customer_name = "Unknown";
+            }
+          }
+        } catch (error) {
+          console.log(
+            `Error fetching customer for order ${order._id}:`,
+            error.message
+          );
+          orderObj.customer_name = "Unknown";
+        }
+
+        return orderObj;
+      })
+    );
+
+    // Calculate order statistics for frontend
+    const total_orders = orders.length;
+
+    // Calculate total items ordered (sum of all product quantities)
+    const items_orders = orders.reduce((total, order) => {
+      return (
+        total +
+        order.products.reduce((itemTotal, product) => {
+          return itemTotal + (product.qty || 1); // Default to 1 if qty not specified
+        }, 0)
+      );
+    }, 0);
+
+    // Count orders by status
+    const orders_restock = orders.filter(
+      (order) => order.status === "returned"
+    ).length;
+    const orders_fulfilled = orders.filter(
+      (order) => order.fulfillment_status === true
+    ).length;
+    const orders_delivered = orders.filter(
+      (order) => order.delivery_status === true
+    ).length;
+
+    // Calculate average delivery time (if applicable)
+    // This assumes you have created_at and delivery_date fields
+    // If you don't have these, you'll need to adjust this calculation
+    let avg_delivery_time = 0;
+    const deliveredOrders = orders.filter(
+      (order) => order.delivery_status === true
+    );
+
+    if (deliveredOrders.length > 0) {
+      const totalDeliveryDays = deliveredOrders.reduce((total, order) => {
+        // If you have a specific delivery date field, use that instead
+        // For now, we'll use updatedAt as a proxy for when the order was delivered
+        const createdDate = new Date(order.createdAt);
+        const deliveryDate = new Date(order.updatedAt);
+        const daysDifference =
+          (deliveryDate - createdDate) / (1000 * 60 * 60 * 24);
+        return total + daysDifference;
+      }, 0);
+
+      avg_delivery_time = (totalDeliveryDays / deliveredOrders.length).toFixed(
+        1
+      );
+    }
 
     const responseData = {
       message: "Orders retrieved successfully",
       orders: ordersList,
+      // Add statistics for frontend
+      total_orders,
+      items_orders,
+      orders_restock,
+      orders_fulfilled,
+      orders_delivered,
+      avg_delivery_time,
     };
 
     const encryptedData = encryptData(responseData);
@@ -68,17 +150,18 @@ exports.getOrder = async (req, res) => {
     const orderObj = order.toObject();
     orderObj.id = orderObj._id;
     delete orderObj._id;
-
+    console.log("OrderObject", orderObj.customer_id);
     // Try to get customer details if available
     try {
-      const customer = await User.findById(orderObj.customer_id).select(
-        "username email"
+      const customer = await Customer.findById(orderObj.customer_id).select(
+        "email first_name last_name phone_number"
       );
       if (customer) {
         orderObj.customer = {
           id: customer._id,
-          username: customer.username,
+          customer_name: customer.first_name + " " + customer.last_name,
           email: customer.email,
+          phone_number: customer.phone_number,
         };
       }
     } catch (error) {
@@ -345,9 +428,6 @@ exports.deleteOrder = async (req, res) => {
   }
 };
 
-// @desc    Restock order (restore quantities)
-// @route   POST /supplier/restock
-// @access  Private (Supplier Only)
 exports.restockOrder = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -369,8 +449,11 @@ exports.restockOrder = async (req, res) => {
 
     // Restore product quantities if tracking is enabled
     for (const item of order.products) {
-      if (item.track_quantity && item.product_id) {
-        const product = await Product.findById(item.product_id);
+      // Check for both id and product_id to ensure compatibility
+      const productId = item.product_id || item.id;
+
+      if (item.track_quantity && productId) {
+        const product = await Product.findById(productId);
         if (product) {
           // Restore quantity
           product.quantity += item.qty;
@@ -521,7 +604,7 @@ exports.markAsDelivered = async (req, res) => {
 
     // If order is delivered, update status to completed
     if (order.delivery_status) {
-      order.status = "completed";
+      order.status = "delivered";
       // Also mark as fulfilled
       order.fulfillment_status = true;
     }

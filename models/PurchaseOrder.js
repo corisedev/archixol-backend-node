@@ -90,7 +90,6 @@ const PurchaseOrderSchema = new mongoose.Schema({
   },
   payment_terms: {
     type: String,
-    enum: ["net_15", "net_30", "net_45", "net_60", "other"],
     default: "net_30",
   },
   destination: {

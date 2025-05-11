@@ -77,6 +77,8 @@ exports.getCustomer = async (req, res) => {
       total: order.calculations.total,
       notes: order.notes,
       created_at: order.createdAt,
+      fulfillment_status: order.fulfillment_status,
+      payment_status: order.payment_status,
     }));
 
     // Format customer for response

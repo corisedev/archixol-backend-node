@@ -150,6 +150,12 @@ exports.createPurchaseOrder = async (req, res) => {
       return res.status(400).json({ error: "Calculations are required" });
     }
 
+    // Calculate total for each product
+    const productsWithTotal = products.map((product) => ({
+      ...product,
+      total: product.price * product.qty,
+    }));
+
     // Try to find vendor by name to get vendor_id
     let vendorId = null;
     try {
@@ -176,7 +182,7 @@ exports.createPurchaseOrder = async (req, res) => {
       vendor_id: vendorId,
       vendor_name,
       supplier_name: supplier_name || userId,
-      payment_terms: payment_terms || "net_30",
+      payment_terms: payment_terms,
       destination: destination || "",
       supplier_currency: supplier_currency || "USD",
       estimated_arrival: estimated_arrival || null,
@@ -186,9 +192,9 @@ exports.createPurchaseOrder = async (req, res) => {
       received_status: received_status || false,
       tags: tags || [],
       notes: notes || "",
-      products,
+      products: productsWithTotal,
       calculations,
-      products_count: products.length,
+      products_count: productsWithTotal.length,
     });
 
     const responseData = {
@@ -236,11 +242,9 @@ exports.updatePurchaseOrder = async (req, res) => {
 
     // Check if the PO has already been received
     if (purchaseOrder.received_status && !updateData.received_status) {
-      return res
-        .status(400)
-        .json({
-          error: "Cannot update a purchase order that has been received",
-        });
+      return res.status(400).json({
+        error: "Cannot update a purchase order that has been received",
+      });
     }
 
     // Try to find vendor by name if vendor_name is updated
@@ -331,11 +335,9 @@ exports.deletePurchaseOrder = async (req, res) => {
 
     // Check if the PO has already been received
     if (purchaseOrder.received_status) {
-      return res
-        .status(400)
-        .json({
-          error: "Cannot delete a purchase order that has been received",
-        });
+      return res.status(400).json({
+        error: "Cannot delete a purchase order that has been received",
+      });
     }
 
     // Set status to cancelled
