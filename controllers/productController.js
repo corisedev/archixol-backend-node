@@ -239,7 +239,6 @@ exports.createProduct = async (req, res) => {
           })
           .filter((id) => id);
       } else if (typeof search_collection === "string") {
-        // Process single string
         processedCollectionList = [search_collection];
       }
     }
