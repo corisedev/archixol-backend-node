@@ -101,9 +101,150 @@ exports.getCollection = async (req, res) => {
   }
 };
 
-// @desc    Create a new collection
-// @route   POST /supplier/create_collection
-// @access  Private (Supplier Only)
+// Helper function to check if a product matches the conditions of a smart collection
+const checkProductMatchesCollection = (product, collection) => {
+  // If not a smart collection, skip
+  if (collection.collection_type !== "smart") {
+    return false;
+  }
+
+  // No conditions means no match
+  if (
+    !collection.smart_conditions ||
+    collection.smart_conditions.length === 0
+  ) {
+    return false;
+  }
+
+  // For 'all' operator, all conditions must be met
+  // For 'any' operator, at least one condition must be met
+  const needAllConditions = collection.smart_operator === "all";
+
+  // Check each condition
+  const conditionResults = collection.smart_conditions.map((condition) => {
+    const { field, operator, value } = condition;
+
+    // Get the product field value
+    let productValue;
+
+    // Handle special cases for fields
+    if (field === "inventory") {
+      productValue = product.quantity;
+    } else if (field === "compareTo_at_price") {
+      productValue = product.compare_at_price;
+    } else if (field === "vendor") {
+      // For vendor we need to check the vendor name, which we don't have here
+      // We'll assume it's stored in search_vendor field
+      productValue = product.search_vendor;
+    } else {
+      productValue = product[field];
+    }
+
+    // If product value is an array (like search_tags), convert to string for comparison
+    if (Array.isArray(productValue)) {
+      if (field === "search_tags") {
+        // For search_tags we're checking if any tag matches
+        if (operator === "is_equal_to") {
+          return productValue.includes(value);
+        }
+      }
+      return false;
+    }
+
+    // Convert values to strings for string operations
+    const productValueStr = String(productValue || "");
+    const conditionValueStr = String(value || "");
+
+    // For numeric comparisons, convert to numbers
+    const numericFields = ["price", "compare_at_price", "weight", "inventory"];
+    let numericProductValue, numericConditionValue;
+
+    if (numericFields.includes(field)) {
+      numericProductValue = parseFloat(productValueStr) || 0;
+      numericConditionValue = parseFloat(conditionValueStr) || 0;
+    }
+
+    // Check based on operator
+    switch (operator) {
+      case "is_equal_to":
+        return productValueStr === conditionValueStr;
+
+      case "is_not_equal_to":
+        return productValueStr !== conditionValueStr;
+
+      case "starts_with":
+        return productValueStr.startsWith(conditionValueStr);
+
+      case "ends_with":
+        return productValueStr.endsWith(conditionValueStr);
+
+      case "contains":
+        return productValueStr.includes(conditionValueStr);
+
+      case "does_not_contain":
+        return !productValueStr.includes(conditionValueStr);
+
+      case "is_greater_than":
+        return numericProductValue > numericConditionValue;
+
+      case "is_less_than":
+        return numericProductValue < numericConditionValue;
+
+      case "is_not_empty":
+        return productValueStr.trim() !== "";
+
+      case "is_empty":
+        return productValueStr.trim() === "";
+
+      default:
+        return false;
+    }
+  });
+
+  // If smart_operator is 'all', all conditions must be true
+  // If smart_operator is 'any', at least one condition must be true
+  return needAllConditions
+    ? conditionResults.every((result) => result)
+    : conditionResults.some((result) => result);
+};
+
+// Add this function to handle smart collection product population
+const populateSmartCollection = async (collection, userId) => {
+  if (
+    collection.collection_type !== "smart" ||
+    !collection.smart_conditions ||
+    collection.smart_conditions.length === 0
+  ) {
+    return;
+  }
+
+  // Get all active products for this supplier
+  const products = await Product.find({
+    supplier_id: userId,
+    status: { $ne: "archived" },
+  });
+
+  // Check each product against the collection conditions
+  for (const product of products) {
+    const matches = checkProductMatchesCollection(product, collection);
+
+    if (matches) {
+      // Add product to collection
+      await Collection.updateOne(
+        { _id: collection._id },
+        { $addToSet: { product_list: product._id } }
+      );
+
+      // Add collection to product's search_collection
+      await Product.updateOne(
+        { _id: product._id },
+        { $addToSet: { search_collection: collection._id } }
+      );
+    }
+  }
+};
+
+// Modify the createCollection function to include smart collection handling
 exports.createCollection = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -174,11 +315,17 @@ exports.createCollection = async (req, res) => {
     const collection = await Collection.create(collectionData);
 
     // Now update all products to add this collection to their search_collection field
+    // (only for manual collections or initially added products)
     if (processedProductList.length > 0) {
       await Product.updateMany(
         { _id: { $in: processedProductList } },
         { $addToSet: { search_collection: collection._id } }
       );
+    }
+
+    // For smart collections, populate with matching products
+    if (collection.collection_type === "smart") {
+      await populateSmartCollection(collection, userId);
     }
 
     // Format for response
@@ -227,9 +374,7 @@ exports.createCollection = async (req, res) => {
   }
 };
 
-// @desc    Update a collection
-// @route   POST /supplier/update_collection
-// @access  Private (Supplier Only)
+// Also update the collection update function to handle smart collection changes
 exports.updateCollection = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -281,6 +426,13 @@ exports.updateCollection = async (req, res) => {
       collection.title = title;
       collection.url_handle = newUrlHandle;
     }
+
+    // Store old collection data for comparison
+    const oldCollectionType = collection.collection_type;
+    const oldSmartOperator = collection.smart_operator;
+    const oldSmartConditions = JSON.stringify(
+      collection.smart_conditions || []
+    );
 
     // Store the old product list for comparison
     const oldProductList = [...collection.product_list].map((id) =>
@@ -334,6 +486,14 @@ exports.updateCollection = async (req, res) => {
     if (meta_description !== undefined)
       collection.meta_description = meta_description;
 
+    // Check if smart collection settings have changed
+    const smartSettingsChanged =
+      collection.collection_type === "smart" &&
+      (oldCollectionType !== "smart" ||
+        oldSmartOperator !== collection.smart_operator ||
+        oldSmartConditions !==
+          JSON.stringify(collection.smart_conditions || []));
+
     // Save updated collection
     await collection.save();
 
@@ -351,6 +511,27 @@ exports.updateCollection = async (req, res) => {
         { _id: { $in: productsToRemove } },
         { $pull: { search_collection: collection_id } }
       );
+    }
+
+    // If collection was changed to smart type or smart settings changed,
+    // repopulate the collection based on the criteria
+    if (smartSettingsChanged) {
+      // First, clear the manual product list if switching from manual to smart
+      if (oldCollectionType !== "smart") {
+        await Collection.updateOne(
+          { _id: collection_id },
+          { $set: { product_list: [] } }
+        );
+
+        // Also remove this collection from all products
+        await Product.updateMany(
+          { search_collection: collection_id },
+          { $pull: { search_collection: collection_id } }
+        );
+      }
+
+      // Then populate with matching products
+      await populateSmartCollection(collection, userId);
     }
 
     // Format for response

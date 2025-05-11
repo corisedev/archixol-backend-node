@@ -8,7 +8,112 @@ const mongoose = require("mongoose");
 const fs = require("fs");
 const path = require("path");
 
-// controllers/productController.js - Modify the getAllProducts function to include collection names
+// Helper function to check if a product matches the conditions of a smart collection
+const checkProductMatchesCollection = (product, collection) => {
+  // If not a smart collection, skip
+  if (collection.collection_type !== "smart") {
+    return false;
+  }
+
+  // No conditions means no match
+  if (
+    !collection.smart_conditions ||
+    collection.smart_conditions.length === 0
+  ) {
+    return false;
+  }
+
+  // For 'all' operator, all conditions must be met
+  // For 'any' operator, at least one condition must be met
+  const needAllConditions = collection.smart_operator === "all";
+
+  // Check each condition
+  const conditionResults = collection.smart_conditions.map((condition) => {
+    const { field, operator, value } = condition;
+
+    // Get the product field value
+    let productValue;
+
+    // Handle special cases for fields
+    if (field === "inventory") {
+      productValue = product.quantity;
+    } else if (field === "compareTo_at_price") {
+      productValue = product.compare_at_price;
+    } else if (field === "vendor") {
+      // For vendor we need to check the vendor name, which we don't have here
+      // We'll assume it's stored in search_vendor field
+      productValue = product.search_vendor;
+    } else {
+      productValue = product[field];
+    }
+
+    // If product value is an array (like search_tags), convert to string for comparison
+    if (Array.isArray(productValue)) {
+      if (field === "search_tags") {
+        // For search_tags we're checking if any tag matches
+        if (operator === "is_equal_to") {
+          return productValue.includes(value);
+        }
+      }
+      return false;
+    }
+
+    // Convert values to strings for string operations
+    const productValueStr = String(productValue || "");
+    const conditionValueStr = String(value || "");
+
+    // For numeric comparisons, convert to numbers
+    const numericFields = ["price", "compare_at_price", "weight", "inventory"];
+    let numericProductValue, numericConditionValue;
+
+    if (numericFields.includes(field)) {
+      numericProductValue = parseFloat(productValueStr) || 0;
+      numericConditionValue = parseFloat(conditionValueStr) || 0;
+    }
+
+    // Check based on operator
+    switch (operator) {
+      case "is_equal_to":
+        return productValueStr === conditionValueStr;
+
+      case "is_not_equal_to":
+        return productValueStr !== conditionValueStr;
+
+      case "starts_with":
+        return productValueStr.startsWith(conditionValueStr);
+
+      case "ends_with":
+        return productValueStr.endsWith(conditionValueStr);
+
+      case "contains":
+        return productValueStr.includes(conditionValueStr);
+
+      case "does_not_contain":
+        return !productValueStr.includes(conditionValueStr);
+
+      case "is_greater_than":
+        return numericProductValue > numericConditionValue;
+
+      case "is_less_than":
+        return numericProductValue < numericConditionValue;
+
+      case "is_not_empty":
+        return productValueStr.trim() !== "";
+
+      case "is_empty":
+        return productValueStr.trim() === "";
+
+      default:
+        return false;
+    }
+  });
+
+  // If smart_operator is 'all', all conditions must be true
+  // If smart_operator is 'any', at least one condition must be true
+  return needAllConditions
+    ? conditionResults.every((result) => result)
+    : conditionResults.some((result) => result);
+};
 
 exports.getAllProducts = async (req, res) => {
   try {
@@ -214,8 +319,6 @@ exports.getProduct = async (req, res) => {
   }
 };
 
-// controllers/productController.js - updated createProduct and updateProduct functions
-
 // @desc    Create a new product
 // @route   POST /supplier/create_product
 // @access  Private (Supplier Only)
@@ -275,56 +378,23 @@ exports.createProduct = async (req, res) => {
       });
     }
 
-    // Process collection list - handle collection names and objectIds
+    // Process collection list
     let processedCollectionList = [];
-    let collectionNames = [];
-    let collectionIds = [];
-
     if (search_collection) {
       if (Array.isArray(search_collection)) {
-        // Process array - extract both ObjectIds and collection names
-        search_collection.forEach((coll) => {
-          if (typeof coll === "object" && coll !== null) {
-            // Handle object with id/ObjectId
-            const id = coll.id || coll._id;
-            if (id && mongoose.Types.ObjectId.isValid(id)) {
-              collectionIds.push(id);
+        // Process array
+        processedCollectionList = search_collection
+          .map((coll) => {
+            if (typeof coll === "object") {
+              return coll.id || coll._id;
             }
-          } else if (typeof coll === "string") {
-            // Check if it's a valid ObjectId
-            if (mongoose.Types.ObjectId.isValid(coll)) {
-              collectionIds.push(coll);
-            } else {
-              // It's likely a collection name
-              collectionNames.push(coll);
-            }
-          }
-        });
+            return coll;
+          })
+          .filter((id) => id);
       } else if (typeof search_collection === "string") {
-        // Single string case
-        if (mongoose.Types.ObjectId.isValid(search_collection)) {
-          collectionIds.push(search_collection);
-        } else {
-          collectionNames.push(search_collection);
-        }
+        processedCollectionList = [search_collection];
       }
     }
-
-    // Now find collections by name and add their IDs to collectionIds
-    if (collectionNames.length > 0) {
-      const foundCollections = await Collection.find({
-        title: { $in: collectionNames },
-        supplier_id: userId,
-        status: { $ne: "archived" },
-      });
-
-      foundCollections.forEach((collection) => {
-        collectionIds.push(collection._id);
-      });
-    }
-
-    // Final processed collection list contains unique valid ObjectIds
-    processedCollectionList = [...new Set(collectionIds)];
 
     // Create new product
     const productData = {
@@ -355,8 +425,7 @@ exports.createProduct = async (req, res) => {
       search_collection: processedCollectionList,
       search_tags: search_tags || [],
       page_title: page_title || title, // Default to title if not provided
-      meta_description:
-        meta_description || (description ? description.substring(0, 160) : ""), // First 160 chars of description
+      meta_description: meta_description || description.substring(0, 160) || "", // First 160 chars of description
     };
 
     // Calculate profit and margin
@@ -374,6 +443,32 @@ exports.createProduct = async (req, res) => {
         { _id: { $in: processedCollectionList } },
         { $addToSet: { product_list: product._id } }
       );
+    }
+
+    // Find all smart collections and check if this product meets their conditions
+    const smartCollections = await Collection.find({
+      supplier_id: userId,
+      collection_type: "smart",
+      status: { $ne: "archived" },
+    });
+
+    for (const collection of smartCollections) {
+      // Check if product matches this collection's conditions
+      const matches = checkProductMatchesCollection(product, collection);
+
+      if (matches) {
+        // If product matches, add it to the collection
+        await Collection.updateOne(
+          { _id: collection._id },
+          { $addToSet: { product_list: product._id } }
+        );
+
+        // Also add this collection to the product's search_collection
+        await Product.updateOne(
+          { _id: product._id },
+          { $addToSet: { search_collection: collection._id } }
+        );
+      }
     }
 
     // Format for response
@@ -414,7 +509,7 @@ exports.updateProduct = async (req, res) => {
       return res.status(400).json({ error: "Product ID is required" });
     }
 
-    // Find the product
+    // Find the product and save original state for comparison
     const product = await Product.findOne({
       _id: product_id,
       supplier_id: userId,
@@ -423,6 +518,9 @@ exports.updateProduct = async (req, res) => {
     if (!product) {
       return res.status(404).json({ error: "Product not found" });
     }
+
+    // Save original state for later comparison
+    const originalProduct = product.toObject();
 
     // If title is being updated, generate a new URL handle if not provided
     if (updateData.title && !updateData.url_handle) {
@@ -455,74 +553,53 @@ exports.updateProduct = async (req, res) => {
       id.toString()
     );
 
-    // Process new collection list
-    let newCollectionList = [];
-    let collectionNames = [];
-    let collectionIds = [];
+    // Process manual collection list from request
+    let processedCollectionList = [];
 
-    if (search_collection !== undefined) {
+    if (search_collection) {
+      // Check if search_collection contains collection titles instead of IDs
+      const collectionTitles = [];
+      const collectionIds = [];
+
       if (Array.isArray(search_collection)) {
-        // Process array - extract both ObjectIds and collection names
+        // Process array
         search_collection.forEach((coll) => {
-          if (typeof coll === "object" && coll !== null) {
-            // Handle object with id/ObjectId
-            const id = coll.id || coll._id;
-            if (id && mongoose.Types.ObjectId.isValid(id)) {
-              collectionIds.push(id);
-            }
+          if (typeof coll === "object" && (coll.id || coll._id)) {
+            collectionIds.push(coll.id || coll._id);
+          } else if (mongoose.Types.ObjectId.isValid(coll)) {
+            collectionIds.push(coll);
           } else if (typeof coll === "string") {
-            // Check if it's a valid ObjectId
-            if (mongoose.Types.ObjectId.isValid(coll)) {
-              collectionIds.push(coll);
-            } else {
-              // It's likely a collection name
-              collectionNames.push(coll);
-            }
+            // Might be a collection title
+            collectionTitles.push(coll);
           }
         });
       } else if (typeof search_collection === "string") {
-        // Single string case
         if (mongoose.Types.ObjectId.isValid(search_collection)) {
           collectionIds.push(search_collection);
         } else {
-          collectionNames.push(search_collection);
+          // Might be a collection title
+          collectionTitles.push(search_collection);
         }
       }
 
-      // Now find collections by name and add their IDs to collectionIds
-      if (collectionNames.length > 0) {
-        const foundCollections = await Collection.find({
-          title: { $in: collectionNames },
-          supplier_id: userId,
-          status: { $ne: "archived" },
-        });
+      // Add the collection IDs we already have
+      processedCollectionList = [...collectionIds];
 
-        foundCollections.forEach((collection) => {
-          collectionIds.push(collection._id);
+      // If we have collection titles, look them up to get their IDs
+      if (collectionTitles.length > 0) {
+        // Find collections by title
+        const collections = await Collection.find({
+          supplier_id: userId,
+          title: { $in: collectionTitles },
+          status: { $ne: "archived" },
+        }).select("_id title");
+
+        // Add the IDs of found collections
+        collections.forEach((collection) => {
+          processedCollectionList.push(collection._id.toString());
         });
       }
-
-      // Final processed collection list contains unique valid ObjectIds
-      newCollectionList = [...new Set(collectionIds)];
-
-      // Update the product's search_collection field
-      product.search_collection = newCollectionList;
-    } else {
-      newCollectionList = oldCollectionList;
     }
-
-    // Convert to array of strings for easier comparison
-    const newCollectionListStr = newCollectionList.map((id) => id.toString());
-
-    // Find collections to add this product to
-    const collectionsToAdd = newCollectionListStr.filter(
-      (id) => !oldCollectionList.includes(id)
-    );
-
-    // Find collections to remove this product from
-    const collectionsToRemove = oldCollectionList.filter(
-      (id) => !newCollectionListStr.includes(id)
-    );
 
     // Update fields
     Object.keys(updateData).forEach((key) => {
@@ -551,8 +628,31 @@ exports.updateProduct = async (req, res) => {
       product.margin = (product.profit / product.price) * 100;
     }
 
+    // Update the product's manual collection list
+    if (search_collection !== undefined) {
+      product.search_collection = processedCollectionList;
+    }
+
     // Save updated product
     await product.save();
+
+    // Get the updated product with its assigned fields
+    const updatedProduct = await Product.findById(product_id);
+
+    // Convert to array of strings for easier comparison
+    const newManualCollectionList = processedCollectionList.map((id) =>
+      id.toString()
+    );
+
+    // Find collections to add this product to
+    const collectionsToAdd = newManualCollectionList.filter(
+      (id) => !oldCollectionList.includes(id)
+    );
+
+    // Find collections to remove this product from
+    const collectionsToRemove = oldCollectionList.filter(
+      (id) => !newManualCollectionList.includes(id)
+    );
 
     // Update collections to add this product
     if (collectionsToAdd.length > 0) {
@@ -570,8 +670,55 @@ exports.updateProduct = async (req, res) => {
       );
     }
 
+    // Now handle smart collections
+    // Get all smart collections
+    const smartCollections = await Collection.find({
+      supplier_id: userId,
+      collection_type: "smart",
+      status: { $ne: "archived" },
+    });
+
+    for (const collection of smartCollections) {
+      // Get current collection status (whether it contains the product)
+      const collectionHasProduct = collection.product_list.some(
+        (pid) => pid.toString() === product_id
+      );
+
+      // Check if product matches this collection's conditions
+      const matches = checkProductMatchesCollection(updatedProduct, collection);
+
+      if (matches && !collectionHasProduct) {
+        // Product matches but is not in collection - add it
+        await Collection.updateOne(
+          { _id: collection._id },
+          { $addToSet: { product_list: product_id } }
+        );
+
+        // Add collection to product's search_collection
+        await Product.updateOne(
+          { _id: product_id },
+          { $addToSet: { search_collection: collection._id } }
+        );
+      } else if (!matches && collectionHasProduct) {
+        // Product doesn't match but is in collection - remove it
+        await Collection.updateOne(
+          { _id: collection._id },
+          { $pull: { product_list: product_id } }
+        );
+
+        // Remove collection from product's search_collection
+        await Product.updateOne(
+          { _id: product_id },
+          { $pull: { search_collection: collection._id } }
+        );
+      }
+    }
+
+    // Get final updated product to return
+    const finalProduct = await Product.findById(product_id);
+
     // Format for response
-    const productObj = product.toObject();
+    const productObj = finalProduct.toObject();
     productObj.id = productObj._id;
     delete productObj._id;
 
