@@ -61,21 +61,10 @@ exports.handleUploadErrors = (err, req, res, next) => {
   next();
 };
 
-// Custom middleware to process uploaded files and decrypted data
+// Modified code for processProductData middleware in middleware/productUpload.js
 exports.processProductData = (req, res, next) => {
   try {
-    console.log("Request after file upload:", req.body);
-    console.log("Files:", req.files);
-
-    // Store media_urls separately to avoid overwriting
-    let media_urls = [];
-    if (req.body.media) {
-      if (Array.isArray(req.body.media)) {
-        media_urls = [...req.body.media];
-      } else {
-        media_urls = [req.body.media];
-      }
-    }
+    // ... existing code ...
 
     if (req.body && req.body.data) {
       // Decrypt the data field
@@ -85,59 +74,54 @@ exports.processProductData = (req, res, next) => {
       );
       const decryptedData = bytes.toString(CryptoJS.enc.Utf8);
 
-      console.log("Decrypted data:", decryptedData);
-
       // Parse the decrypted data
       const parsedData = JSON.parse(decryptedData);
 
-      // Add newly uploaded file paths
-      const newUploaded = [];
-      if (req.files && req.files.length > 0) {
-        req.files.forEach((file) => {
-          newUploaded.push(`/uploads/products/${file.filename}`);
-        });
+      // Process search_collection field properly
+      if (parsedData.search_collection) {
+        if (Array.isArray(parsedData.search_collection)) {
+          // Make sure each item is just the ObjectId, not an array or nested structure
+          parsedData.search_collection = parsedData.search_collection
+            .map((item) => {
+              // If it's an object with id/ObjectId property, extract just that
+              if (typeof item === "object" && item !== null) {
+                return item.id || item._id;
+              }
+              // If it's a string that looks like an array, try to parse it
+              if (
+                typeof item === "string" &&
+                item.startsWith("[") &&
+                item.endsWith("]")
+              ) {
+                try {
+                  // Try to extract ObjectId from the string if possible
+                  const parsed = JSON.parse(item);
+                  if (Array.isArray(parsed) && parsed.length > 0) {
+                    return parsed[0]; // Take first item if it's an array
+                  }
+                } catch (e) {
+                  // Parsing failed, just return the original item
+                  return item;
+                }
+              }
+              return item;
+            })
+            .filter((id) => id); // Filter out any empty/null/undefined values
+        } else if (typeof parsedData.search_collection === "string") {
+          // If it's a single string, make it an array with one item
+          parsedData.search_collection = [parsedData.search_collection];
+        }
       }
 
-      // Replace req.body with the decrypted data
+      // Replace req.body with the parsed data
       req.body = parsedData;
 
-      // Add back the media_urls
-      if (media_urls.length > 0) {
-        req.body.media_urls = media_urls;
-      }
-
       // Add newly uploaded files to media
-      if (newUploaded.length > 0) {
-        req.body.media = [...(req.body.media || []), ...newUploaded];
-      }
-    } else if (req.files && req.files.length > 0) {
-      // If there's no encrypted data but there are files
-      if (!req.body.media) {
-        req.body.media = [];
-      }
-
-      // Add uploaded files to media
-      req.files.forEach((file) => {
-        req.body.media.push(`/uploads/products/${file.filename}`);
-      });
+      // ... rest of existing code ...
     }
 
-    console.log("Final request body:", req.body);
     next();
   } catch (error) {
-    console.error("Processing error:", error);
-    // Delete uploaded files if there was an error
-    if (req.files && req.files.length > 0) {
-      req.files.forEach((file) => {
-        try {
-          fs.unlinkSync(file.path);
-        } catch (unlinkErr) {
-          console.error("Error deleting file:", unlinkErr);
-        }
-      });
-    }
-    return res
-      .status(400)
-      .json({ error: "Failed to process request: " + error.message });
+    // ... error handling ...
   }
 };

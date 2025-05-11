@@ -1,6 +1,7 @@
 // controllers/productController.js
 const Product = require("../models/Product");
 const Vendor = require("../models/Vendor");
+const Collection = require("../models/Collection");
 const { encryptData } = require("../utils/encryptResponse");
 const slugify = require("slugify");
 const mongoose = require("mongoose");
