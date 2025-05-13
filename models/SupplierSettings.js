@@ -233,7 +233,6 @@ const CheckoutSettingsSchema = new mongoose.Schema({
   },
   tip_type: {
     type: String,
-    enum: ["percentage", "fixed"],
     default: "percentage",
   },
   updatedAt: {

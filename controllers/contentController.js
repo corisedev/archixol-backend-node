@@ -45,9 +45,9 @@ exports.getFiles = async (req, res) => {
             date: fileStats
               ? new Date(fileStats.mtime).toISOString()
               : new Date().toISOString(),
-            reference: `${baseUrl}${media}`,
+            reference: `${media}`,
             extension: path.extname(fileName),
-            preview: `${baseUrl}${media}`,
+            preview: `${media}`,
           };
         });
 
@@ -78,7 +78,7 @@ exports.getFiles = async (req, res) => {
               : new Date().toISOString(),
             reference: `${baseUrl}${image}`,
             extension: path.extname(fileName),
-            preview: `${baseUrl}${image}`,
+            preview: `${image}`,
           };
         });
 
@@ -113,7 +113,8 @@ exports.getFiles = async (req, res) => {
 exports.deleteFiles = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { data } = req.body;
+    const data = Array.isArray(req.body) ? req.body : req.body.data;
+    console.log("File data to process:", data);
 
     if (!data || !Array.isArray(data) || data.length === 0) {
       return res.status(400).json({ error: "No files selected for deletion" });

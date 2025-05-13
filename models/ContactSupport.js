@@ -72,7 +72,6 @@ const FeedbackSchema = new mongoose.Schema({
   },
   feedback_type: {
     type: String,
-    enum: ["general", "product", "service", "website", "other"],
     default: "general",
   },
   rating: {
@@ -117,15 +116,6 @@ const SupportRequestSchema = new mongoose.Schema({
   },
   support_category: {
     type: String,
-    enum: [
-      "account",
-      "order",
-      "product",
-      "payment",
-      "delivery",
-      "technical",
-      "other",
-    ],
     default: "other",
   },
   subject: {
