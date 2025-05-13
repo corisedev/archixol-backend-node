@@ -1,5 +1,6 @@
 // models/SupplierSettings.js
 const mongoose = require("mongoose");
+const crypto = require("crypto");
 
 // Store Details Schema
 const StoreDetailsSchema = new mongoose.Schema({

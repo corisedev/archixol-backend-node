@@ -124,23 +124,37 @@ exports.getTaxDetails = async (req, res) => {
       taxDetails = await TaxDetails.create({ supplier_id: userId });
     }
 
+    // Get all products belonging to this supplier
+    const products = await Product.find({ supplier_id: userId });
+
     // Get products with custom tax
     const productTaxes = await ProductTax.find({ supplier_id: userId });
 
-    // Format product taxes
-    const taxProducts = [];
+    // Create a map for quick lookup of custom taxes
+    const customTaxMap = {};
     for (const pt of productTaxes) {
-      try {
-        const product = await Product.findById(pt.product_id);
-        if (product) {
-          taxProducts.push({
-            product_id: product._id,
-            product_name: product.title,
-            tax_rate: pt.custom_tax,
-          });
-        }
-      } catch (error) {
-        console.error("Error fetching product:", error);
+      customTaxMap[pt.product_id.toString()] = pt.custom_tax;
+    }
+
+    // Format all products with their tax rates
+    const taxProducts = [];
+    for (const product of products) {
+      const productId = product._id.toString();
+
+      // Get the tax rate for this product (custom or default)
+      const taxRate =
+        customTaxMap[productId] ||
+        (taxDetails.is_auto_apply_tax ? taxDetails.default_tax_rate : "");
+
+      // Only include products that have a tax rate
+      if (taxRate) {
+        taxProducts.push({
+          product_id: product._id,
+          title: product.title,
+          tax_rate: taxRate,
+          category: product.category,
+          is_custom: customTaxMap[productId] ? true : false,
+        });
       }
     }
 
@@ -174,7 +188,7 @@ exports.updateTaxDetails = async (req, res) => {
     let taxDetails = await TaxDetails.findOne({ supplier_id: userId });
 
     if (!taxDetails) {
-      taxDetails = new TaxDetails({ supplier_id: userId });
+      taxDetails = await new TaxDetails({ supplier_id: userId });
     }
 
     // Update fields
@@ -185,6 +199,34 @@ exports.updateTaxDetails = async (req, res) => {
     if (reg_number !== undefined) taxDetails.reg_number = reg_number;
 
     await taxDetails.save();
+
+    // If auto-apply tax is enabled, apply the default tax rate to all products
+    if (is_auto_apply_tax && default_tax_rate) {
+      // Get all products belonging to this supplier
+      const products = await Product.find({ supplier_id: userId });
+
+      // For each product, update or create tax entry with default tax rate
+      for (const product of products) {
+        // Check if product has a custom tax
+        const existingCustomTax = await ProductTax.findOne({
+          supplier_id: userId,
+          product_id: product._id,
+        });
+
+        if (existingCustomTax) {
+          // Update existing tax entry with the new default tax rate
+          existingCustomTax.custom_tax = default_tax_rate;
+          await existingCustomTax.save();
+        } else {
+          // Create new tax entry with the default tax rate
+          await ProductTax.create({
+            supplier_id: userId,
+            product_id: product._id,
+            custom_tax: default_tax_rate,
+          });
+        }
+      }
+    }
 
     const responseData = {
       message: "Tax details updated successfully",
@@ -254,7 +296,6 @@ exports.applyCustomTax = async (req, res) => {
   }
 };
 
-// Return Rules APIs
 // @desc    Update return rules
 // @route   POST /supplier/return_rules
 // @access  Private (Supplier Only)
@@ -289,7 +330,31 @@ exports.updateReturnRules = async (req, res) => {
       returnRules.restocking_fee = restocking_fee;
     if (final_sale_items !== undefined)
       returnRules.final_sale_items = final_sale_items;
-    if (sale_items !== undefined) returnRules.sale_items = sale_items;
+
+    // Extract just the product IDs from the sale_items objects
+    if (sale_items !== undefined) {
+      if (Array.isArray(sale_items)) {
+        // Extract just the product IDs from the product objects
+        const productIds = sale_items
+          .map((item) => {
+            // Check if item is a string (already an ID) or an object with an id field
+            if (typeof item === "string") {
+              return item;
+            } else if (item && item.id) {
+              return item.id;
+            } else if (item && item._id) {
+              return item._id;
+            }
+            return null;
+          })
+          .filter((id) => id !== null); // Filter out any null values
+
+        returnRules.sale_items = productIds;
+      } else {
+        // If it's not an array, log an error and don't update this field
+        console.error("sale_items is not an array:", sale_items);
+      }
+    }
 
     await returnRules.save();
 
@@ -617,28 +682,61 @@ exports.getAllPolicies = async (req, res) => {
     const policyContent =
       (await PolicyContent.findOne({ supplier_id: userId })) ||
       new PolicyContent({ supplier_id: userId });
-    const returnRules =
-      (await ReturnRules.findOne({ supplier_id: userId })) ||
-      new ReturnRules({ supplier_id: userId });
+
+    // Find and populate return rules with product details for sale_items
+    const returnRules = await ReturnRules.findOne({
+      supplier_id: userId,
+    }).populate({
+      path: "sale_items",
+      model: "Product",
+      select:
+        "title url_handle description category media price compare_at_price tax status id",
+    });
+
+    if (!returnRules) {
+      returnRules = new ReturnRules({ supplier_id: userId });
+    }
+
+    // Find contact info
+    const contactInfo = await ContactInfo.findOne({ supplier_id: userId });
+    const isEmpty = Object.keys(contactInfo).length === 0;
+
+    // Transform sale_items to include necessary product details
+    const populatedSaleItems = returnRules.sale_items
+      ? returnRules.sale_items.map((product) => ({
+          id: product._id || product.id,
+          title: product.title || "",
+          url_handle: product.url_handle || "",
+          description: product.description || "",
+          category: product.category || "",
+          media: product.media || [],
+          price: product.price || 0,
+          compare_at_price: product.compare_at_price || 0,
+          tax: product.tax || false,
+          status: product.status || "active",
+        }))
+      : [];
 
     const responseData = {
       message: "Policy settings retrieved successfully",
       rules: {
         return_rules: {
-          is_enabled: returnRules.is_enabled,
-          return_window: returnRules.return_window,
-          no_of_custom_days: returnRules.no_of_custom_days,
-          return_shipping_cost: returnRules.return_shipping_cost,
-          flat_rate: returnRules.flat_rate,
-          restocking_fee: returnRules.restocking_fee,
-          final_sale_items: returnRules.final_sale_items,
-          sale_items: returnRules.sale_items,
+          is_enabled: returnRules.is_enabled || false,
+          return_window: returnRules.return_window || "14",
+          no_of_custom_days: returnRules.no_of_custom_days || "",
+          return_shipping_cost:
+            returnRules.return_shipping_cost || "return_shipping_by_customer",
+          flat_rate: returnRules.flat_rate || "",
+          restocking_fee: returnRules.restocking_fee || false,
+          final_sale_items: returnRules.final_sale_items || "none",
+          sale_items: populatedSaleItems,
         },
         policies: {
-          return_and_refund: policyContent.return_and_refund || "",
-          privacy_policy: policyContent.privacy_policy || "",
-          terms_of_services: policyContent.terms_of_services || "",
-          shipping_policy: policyContent.shipping_policy || "",
+          return_and_refund: policyContent.return_and_refund ? true : false,
+          privacy_policy: policyContent.privacy_policy ? true : false,
+          terms_of_services: policyContent.terms_of_services ? true : false,
+          shipping_policy: policyContent.shipping_policy ? true : false,
+          contact_info: !isEmpty ? true : false,
         },
       },
     };
@@ -870,7 +968,7 @@ exports.updateSupplierProfile = async (req, res) => {
     const userId = req.user.id;
     const { profile_image, first_name, last_name, email, phone_number } =
       req.body;
-
+    console.log(req.body);
     // Find or create supplier profile
     let supplierProfile = await SupplierProfile.findOne({
       supplier_id: userId,
@@ -917,6 +1015,8 @@ exports.getSupplierProfile = async (req, res) => {
     if (!supplierProfile) {
       supplierProfile = await SupplierProfile.create({ supplier_id: userId });
     }
+
+    console.log(supplierProfile);
 
     const responseData = {
       message: "Supplier profile retrieved successfully",
@@ -1099,6 +1199,7 @@ exports.resendRecoveryEmail = async (req, res) => {
   try {
     const userId = req.user.id;
     const { recovery_email } = req.body;
+    console.log("RESEND");
 
     if (!recovery_email) {
       return res.status(400).json({ error: "Recovery email is required" });

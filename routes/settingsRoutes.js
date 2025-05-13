@@ -37,6 +37,12 @@ const {
   addRecoveryPhone,
 } = require("../controllers/settingsController");
 
+const {
+  uploadProfileImage,
+  handleProfileUploadErrors,
+  processProfileData,
+} = require("../middleware/supplierProfileUpload");
+
 // Import middleware
 const { protect, authorizeSupplier } = require("../middleware/auth");
 const { decryptRequest } = require("../middleware/encryption");
@@ -169,18 +175,22 @@ router.post("/terms_of_services", decryptRequest, updateTermsOfService);
 router.get("/terms_of_services", getTermsOfService);
 router.post("/shipping_policy", decryptRequest, updateShippingPolicy);
 router.get("/shipping_policy", getShippingPolicy);
+router.post("/contact_info", decryptRequest, updateContactInfo);
+router.get("/contact_info", getContactInfo);
 router.get("/policies", getAllPolicies);
 
 // Checkout settings routes
 router.post("/checkout_settings", decryptRequest, updateCheckoutSettings);
 router.get("/checkout_settings", getCheckoutSettings);
 
-// Contact info routes
-router.post("/contact_info", decryptRequest, updateContactInfo);
-router.get("/contact_info", getContactInfo);
-
 // Supplier profile routes
-router.post("/supplier_profile", decryptRequest, updateSupplierProfile);
+router.post(
+  "/supplier_profile",
+  uploadProfileImage,
+  handleProfileUploadErrors,
+  processProfileData,
+  updateSupplierProfile
+);
 router.get("/supplier_profile", getSupplierProfile);
 
 // Recovery email routes
