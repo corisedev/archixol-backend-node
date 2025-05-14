@@ -81,7 +81,8 @@ exports.getPurchaseOrder = async (req, res) => {
         if (vendor) {
           poObj.vendor_details = {
             id: vendor._id,
-            vendor_name: vendor.vendor_name,
+            vendor_name:
+              vendor.vendor_name || `${vendor.first_name} ${vendor.last_name}`,
             email: vendor.email,
             phone_number: vendor.phone_number,
             address: {
@@ -100,22 +101,32 @@ exports.getPurchaseOrder = async (req, res) => {
 
     // Fetch product images for each product in the purchase order
     if (poObj.products && poObj.products.length > 0) {
+      const productIds = poObj.products
+        .filter((product) => product._id)
+        .map((product) => product._id);
+
+      console.log("FROM FRONTEND", poObj.products);
+
+      // Fetch all products in one query for better performance
+      const productDetails = await Product.find({
+        _id: { $in: productIds },
+      }).select("_id media");
+
+      // Create a map for quick lookup
+      const productMediaMap = {};
+      productDetails.forEach((product) => {
+        productMediaMap[product._id.toString()] = product.media || [];
+      });
+      console.log("PRODUCTS:", productDetails);
+      console.log("productMediaMap:", productMediaMap);
+
+      // Now assign media to each product
       for (let i = 0; i < poObj.products.length; i++) {
         const product = poObj.products[i];
-        if (product.product_id) {
-          try {
-            const productDetails = await Product.findById(product.product_id);
-            if (productDetails) {
-              // Add media property with product images
-              poObj.products[i].media = productDetails.media || [];
-            }
-          } catch (error) {
-            console.log(`Error fetching product details: ${error.message}`);
-            // If there's an error, just set media as empty array
-            poObj.products[i].media = [];
-          }
+        if (product._id) {
+          const productId = product._id.toString();
+          poObj.products[i].media = productMediaMap[productId] || [];
         } else {
-          // If no product_id, set media as empty array
           poObj.products[i].media = [];
         }
       }
@@ -185,19 +196,42 @@ exports.createPurchaseOrder = async (req, res) => {
 
     // Try to find vendor by name to get vendor_id
     let vendorId = null;
-    try {
-      const vendor = await Vendor.findOne({
-        $or: [
-          { vendor_name: vendor_name },
-          {
-            first_name: { $regex: new RegExp(vendor_name.split(" ")[0], "i") },
-          },
-        ],
-        supplier_id: userId,
-      });
+    let actualVendorName = vendor_name;
 
-      if (vendor) {
-        vendorId = vendor._id;
+    try {
+      // First check if vendor_name is actually a MongoDB ObjectId
+      if (vendor_name && vendor_name.match(/^[0-9a-fA-F]{24}$/)) {
+        // If it's an ObjectId, fetch the vendor directly by ID
+        const vendorById = await Vendor.findOne({
+          _id: vendor_name,
+          supplier_id: userId,
+        });
+
+        if (vendorById) {
+          vendorId = vendorById._id;
+          actualVendorName =
+            vendorById.vendor_name ||
+            `${vendorById.first_name} ${vendorById.last_name}`;
+        }
+      } else {
+        // Otherwise, search by name
+        const vendor = await Vendor.findOne({
+          $or: [
+            { vendor_name: vendor_name },
+            {
+              first_name: {
+                $regex: new RegExp(vendor_name.split(" ")[0], "i"),
+              },
+            },
+          ],
+          supplier_id: userId,
+        });
+
+        if (vendor) {
+          vendorId = vendor._id;
+          actualVendorName =
+            vendor.vendor_name || `${vendor.first_name} ${vendor.last_name}`;
+        }
       }
     } catch (error) {
       console.log("Vendor lookup error:", error.message);
@@ -207,7 +241,7 @@ exports.createPurchaseOrder = async (req, res) => {
     const purchaseOrder = await PurchaseOrder.create({
       supplier_id: userId,
       vendor_id: vendorId,
-      vendor_name,
+      vendor_name: actualVendorName,
       supplier_name: supplier_name || userId,
       payment_terms: payment_terms,
       destination: destination || "",
@@ -280,22 +314,43 @@ exports.updatePurchaseOrder = async (req, res) => {
       updateData.vendor_name !== purchaseOrder.vendor_name
     ) {
       try {
-        const vendor = await Vendor.findOne({
-          $or: [
-            { vendor_name: updateData.vendor_name },
-            {
-              first_name: {
-                $regex: new RegExp(updateData.vendor_name.split(" ")[0], "i"),
-              },
-            },
-          ],
-          supplier_id: userId,
-        });
+        // Check if vendor_name is actually a MongoDB ObjectId
+        if (updateData.vendor_name.match(/^[0-9a-fA-F]{24}$/)) {
+          // If it's an ObjectId, fetch the vendor directly by ID
+          const vendorById = await Vendor.findOne({
+            _id: updateData.vendor_name,
+            supplier_id: userId,
+          });
 
-        if (vendor) {
-          purchaseOrder.vendor_id = vendor._id;
+          if (vendorById) {
+            purchaseOrder.vendor_id = vendorById._id;
+            updateData.vendor_name =
+              vendorById.vendor_name ||
+              `${vendorById.first_name} ${vendorById.last_name}`;
+          } else {
+            purchaseOrder.vendor_id = null;
+          }
         } else {
-          purchaseOrder.vendor_id = null;
+          // Otherwise, search by name
+          const vendor = await Vendor.findOne({
+            $or: [
+              { vendor_name: updateData.vendor_name },
+              {
+                first_name: {
+                  $regex: new RegExp(updateData.vendor_name.split(" ")[0], "i"),
+                },
+              },
+            ],
+            supplier_id: userId,
+          });
+
+          if (vendor) {
+            purchaseOrder.vendor_id = vendor._id;
+            updateData.vendor_name =
+              vendor.vendor_name || `${vendor.first_name} ${vendor.last_name}`;
+          } else {
+            purchaseOrder.vendor_id = null;
+          }
         }
       } catch (error) {
         console.log("Vendor lookup error:", error.message);
