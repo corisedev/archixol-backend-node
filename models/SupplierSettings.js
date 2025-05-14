@@ -132,11 +132,6 @@ const ReturnRulesSchema = new mongoose.Schema({
   },
   return_shipping_cost: {
     type: String,
-    enum: [
-      "return_shipping_by_customer",
-      "return_shipping_by_store",
-      "flat_rate",
-    ],
     default: "return_shipping_by_customer",
   },
   flat_rate: {
