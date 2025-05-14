@@ -83,6 +83,7 @@ const {
 } = require("../controllers/purchaseOrderController");
 
 const { getInventory } = require("../controllers/inventoryController");
+const { generateReport } = require("../controllers/reportController");
 
 const { getFiles, deleteFiles } = require("../controllers/contentController");
 
@@ -181,5 +182,7 @@ router.get("/get_files", getFiles);
 router.post("/delete_file", decryptRequest, deleteFiles);
 
 router.get("/get_inventory", getInventory);
+
+router.post("/generate_report", decryptRequest, generateReport);
 
 module.exports = router;
