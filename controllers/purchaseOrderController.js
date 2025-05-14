@@ -98,6 +98,29 @@ exports.getPurchaseOrder = async (req, res) => {
       }
     }
 
+    // Fetch product images for each product in the purchase order
+    if (poObj.products && poObj.products.length > 0) {
+      for (let i = 0; i < poObj.products.length; i++) {
+        const product = poObj.products[i];
+        if (product.product_id) {
+          try {
+            const productDetails = await Product.findById(product.product_id);
+            if (productDetails) {
+              // Add media property with product images
+              poObj.products[i].media = productDetails.media || [];
+            }
+          } catch (error) {
+            console.log(`Error fetching product details: ${error.message}`);
+            // If there's an error, just set media as empty array
+            poObj.products[i].media = [];
+          }
+        } else {
+          // If no product_id, set media as empty array
+          poObj.products[i].media = [];
+        }
+      }
+    }
+
     const responseData = {
       message: "Purchase order retrieved successfully",
       purchase_order: poObj,
@@ -150,11 +173,15 @@ exports.createPurchaseOrder = async (req, res) => {
       return res.status(400).json({ error: "Calculations are required" });
     }
 
-    // Calculate total for each product
-    const productsWithTotal = products.map((product) => ({
-      ...product,
-      total: product.price * product.qty,
-    }));
+    // Process the products - use qty from frontend as quantity and calculate total
+    const productsWithTotal = products.map((product) => {
+      const qty = product.qty || 1; // Default to 1 if qty is not provided
+      return {
+        ...product,
+        quantity: qty, // Set quantity to qty from frontend
+        total: (product.price || 0) * qty,
+      };
+    });
 
     // Try to find vendor by name to get vendor_id
     let vendorId = null;
@@ -275,6 +302,21 @@ exports.updatePurchaseOrder = async (req, res) => {
       }
     }
 
+    // Process products if they are being updated
+    if (updateData.products && Array.isArray(updateData.products)) {
+      updateData.products = updateData.products.map((product) => {
+        const qty = product.qty || 1; // Default to 1 if qty is not provided
+        return {
+          ...product,
+          quantity: qty, // Set quantity to qty from frontend
+          total: (product.price || 0) * qty,
+        };
+      });
+
+      // Update products_count
+      updateData.products_count = updateData.products.length;
+    }
+
     // Update purchase order fields
     Object.keys(updateData).forEach((key) => {
       if (key !== "po_no" && key !== "supplier_id") {
@@ -282,11 +324,6 @@ exports.updatePurchaseOrder = async (req, res) => {
         purchaseOrder[key] = updateData[key];
       }
     });
-
-    // Update products_count
-    if (updateData.products) {
-      purchaseOrder.products_count = updateData.products.length;
-    }
 
     await purchaseOrder.save();
 
@@ -392,7 +429,7 @@ exports.markAsReceived = async (req, res) => {
       if (item.product_id) {
         const product = await Product.findById(item.product_id);
         if (product) {
-          // Increase quantity
+          // Increase quantity - use the quantity from the purchase order (which was set from frontend's qty)
           product.quantity += item.quantity;
           await product.save();
         }

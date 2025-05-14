@@ -166,25 +166,41 @@ exports.getDashboardData = async (req, res) => {
         .json({ error: "Access denied. User is not a supplier" });
     }
 
-    // Get total sales
+    // Get all orders
     const orders = await Order.find({ supplier_id: userId });
-    const totalSale = orders.reduce(
-      (acc, order) => acc + order.total_amount,
-      0
+
+    // Filter for completed/delivered orders for sales calculations
+    const completedOrders = orders.filter(
+      (order) => order.status === "completed" || order.status === "delivered"
     );
 
-    // Get order count
+    // Get total sales from only completed/delivered orders
+    const totalSale = completedOrders.reduce((acc, order) => {
+      if (order.calculations && typeof order.calculations.total === "number") {
+        return acc + order.calculations.total;
+      }
+      return acc;
+    }, 0);
+
+    // Get order count (all orders)
     const ordersCount = orders.length;
 
     // Get total unique clients
     const uniqueClients = [
-      ...new Set(orders.map((order) => order.client_id.toString())),
+      ...new Set(
+        orders
+          .filter((order) => order.customer_id)
+          .map((order) => order.customer_id.toString())
+      ),
     ];
     const totalClients = uniqueClients.length;
 
-    // Get unfulfilled orders (pending/processing)
+    // Get unfulfilled orders (pending/processing/returned)
     const unfulfilledOrders = orders.filter(
-      (order) => order.status === "pending" || order.status === "processing"
+      (order) =>
+        order.status === "pending" ||
+        order.status === "processing" ||
+        order.status === "returned"
     ).length;
 
     // Get product stock data (products with quantity < min_qty)
@@ -237,37 +253,42 @@ exports.getDashboardData = async (req, res) => {
         59
       );
 
-      // Find orders for this month
-      const monthlyOrders = orders.filter((order) => {
+      // Find completed/delivered orders for this month
+      const monthlyOrders = completedOrders.filter((order) => {
         const orderDate = new Date(order.createdAt);
         return orderDate >= startOfMonth && orderDate <= endOfMonth;
       });
 
-      // Calculate total sales for this month
-      const monthlySales = monthlyOrders.reduce(
-        (acc, order) => acc + order.total_amount,
-        0
-      );
+      // Calculate total sales for this month from completed/delivered orders
+      const monthlySales = monthlyOrders.reduce((acc, order) => {
+        if (
+          order.calculations &&
+          typeof order.calculations.total === "number"
+        ) {
+          return acc + order.calculations.total;
+        }
+        return acc;
+      }, 0);
 
-      // Only add months with sales
-      if (monthlySales > 0) {
-        salesData.push({
-          month: monthNames[month.getMonth()],
-          total_sales: Number(monthlySales.toFixed(2)),
-        });
-      }
+      // Add month to the data
+      salesData.push({
+        month: monthNames[month.getMonth()],
+        total_sales: Number(monthlySales.toFixed(2)),
+      });
     }
 
     // Prepare response data
     const responseData = {
-      message: "Supplier dashboard data retrieved successfully.",
-      total_sale: Number(totalSale.toFixed(2)),
-      orders_count: ordersCount,
-      total_clients: totalClients,
-      product_stock_count: lowStockProducts.length,
-      product_stock: lowStockProducts,
-      orders_unfullfilled: unfulfilledOrders,
-      sales_data: salesData,
+      dashboard_data: {
+        message: "Supplier dashboard data retrieved successfully.",
+        total_sale: Number(totalSale.toFixed(2)),
+        orders_count: ordersCount,
+        total_clients: totalClients,
+        product_stock_count: lowStockProducts.length,
+        product_stock: lowStockProducts,
+        orders_unfullfilled: unfulfilledOrders,
+        sales_data: salesData,
+      },
     };
 
     const encryptedData = encryptData(responseData);
