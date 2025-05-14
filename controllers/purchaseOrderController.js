@@ -129,6 +129,7 @@ exports.getPurchaseOrder = async (req, res) => {
         } else {
           poObj.products[i].media = [];
         }
+        poObj.products[i].qty = poObj.products[i].quantity;
       }
     }
 
