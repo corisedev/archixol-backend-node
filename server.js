@@ -1,4 +1,4 @@
-// Updated server.js
+// server.js (updated)
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
@@ -42,11 +42,13 @@ app.use("/profile", require("./routes/profileRoutes"));
 app.use("/company", require("./routes/companyRoutes"));
 app.use("/uploads/profile", require("./routes/profileUploadRoutes"));
 app.use("/uploads/service", require("./routes/serviceUploadRoutes"));
+app.use("/uploads/chat", require("./routes/chatUploadRoutes")); // New chat upload routes
 app.use("/public", require("./routes/publicProfileRoutes"));
 app.use("/supplier", require("./routes/supplierRoutes"));
 app.use("/supplier", require("./routes/settingsRoutes"));
+app.use("/chat", require("./routes/chatRoutes")); // New chat routes
 
-// New WebSocket status endpoint
+// WebSocket status endpoint
 app.get("/api/websocket-status", (req, res) => {
   const status = {
     connectedUsers: socketService.getConnectedUserCount(),
@@ -60,9 +62,28 @@ app.get("/api/websocket-status", (req, res) => {
   res.json(status);
 });
 
+// Chat status endpoint
+app.get("/api/chat-status", (req, res) => {
+  const status = {
+    connectedUsers: socketService.getConnectedUserCount(),
+    usersByType: {
+      clients: socketService
+        .getConnectedUsers()
+        .filter((u) => u.userType === "client").length,
+      suppliers: socketService
+        .getConnectedUsers()
+        .filter((u) => u.userType === "supplier").length,
+      service_providers: socketService
+        .getConnectedUsers()
+        .filter((u) => u.userType === "service_provider").length,
+    },
+  };
+  res.json(status);
+});
+
 // Default route
 app.get("/", (req, res) => {
-  res.send("Archixol API is running");
+  res.send("Archixol API is running with Chat functionality");
 });
 
 // Error handling middleware
