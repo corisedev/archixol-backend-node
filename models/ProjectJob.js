@@ -45,7 +45,6 @@ const ProjectJobSchema = new mongoose.Schema({
   type: {
     type: String,
     required: [true, "Job type is required"],
-    enum: ["fixed", "hourly", "project"],
     default: "project",
   },
   description: {

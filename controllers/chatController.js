@@ -1,96 +1,71 @@
-// controllers/chatController.js
+// controllers/chatController.js (Updated for real-time functionality)
 const Conversation = require("../models/Conversation");
 const Message = require("../models/Message");
+const User = require("../models/User");
 const ChatStatus = require("../models/ChatStatus");
 const Notification = require("../models/Notification");
-const User = require("../models/User");
 const { encryptData } = require("../utils/encryptResponse");
-const mongoose = require("mongoose");
 
-// Helper function to create or update chat status
-const getOrCreateChatStatus = async (userId) => {
-  let chatStatus = await ChatStatus.findOne({ user: userId });
-
-  if (!chatStatus) {
-    chatStatus = new ChatStatus({
-      user: userId,
-      isOnline: false,
-      lastSeen: new Date(),
-    });
-    await chatStatus.save();
-  }
-
-  return chatStatus;
-};
-
-// @desc    Get all conversations for current user
+// @desc    Get all conversations for a user
 // @route   GET /chat/conversations
 // @access  Private
 exports.getConversations = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // Find all conversations where current user is a participant
     const conversations = await Conversation.find({
       participants: userId,
       isActive: true,
     })
-      .populate("participants", "username user_type email")
-      .populate("lastMessage", "text createdAt")
-      .sort({ updatedAt: -1 });
-
-    // Format the conversations for response
-    const formattedConversations = await Promise.all(
-      conversations.map(async (conv) => {
-        // Get other participants (excluding current user)
-        const otherParticipants = conv.participants.filter(
-          (p) => p._id.toString() !== userId
-        );
-
-        // Get unread count for current user
-        const unreadCount = conv.unreadCount.get(userId) || 0;
-
-        // Get online status for other participants
-        const otherParticipantIds = otherParticipants.map((p) => p._id);
-        const statuses = await ChatStatus.find({
-          user: { $in: otherParticipantIds },
-        });
-
-        // Create a map of participant ID to online status
-        const onlineStatusMap = {};
-        statuses.forEach((status) => {
-          onlineStatusMap[status.user.toString()] = {
-            isOnline: status.isOnline,
-            lastSeen: status.lastSeen,
-          };
-        });
-
-        // Add online status to participants
-        const participantsWithStatus = otherParticipants.map((p) => ({
-          _id: p._id,
-          username: p.username,
-          user_type: p.user_type,
-          email: p.email,
-          isOnline: onlineStatusMap[p._id.toString()]?.isOnline || false,
-          lastSeen: onlineStatusMap[p._id.toString()]?.lastSeen || null,
-        }));
-
-        return {
-          _id: conv._id,
-          participants: participantsWithStatus,
-          lastMessage: conv.lastMessage
-            ? {
-                text: conv.lastMessageText || conv.lastMessage.text,
-                createdAt: conv.lastMessageTime || conv.lastMessage.createdAt,
-              }
-            : null,
-          unreadCount,
-          updatedAt: conv.updatedAt,
-        };
+      .populate({
+        path: "participants",
+        select: "username email user_type",
+        match: { _id: { $ne: userId } },
       })
+      .populate({
+        path: "lastMessage",
+        select: "text createdAt sender",
+      })
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    // Get chat status for all participants
+    const participantIds = conversations.flatMap((conv) =>
+      conv.participants.map((p) => p._id)
     );
 
-    // Encrypt and send response
+    const chatStatuses = await ChatStatus.find({
+      user: { $in: participantIds },
+    }).lean();
+
+    const statusMap = {};
+    chatStatuses.forEach((status) => {
+      statusMap[status.user.toString()] = status;
+    });
+
+    // Format conversations
+    const formattedConversations = conversations.map((conv) => {
+      const otherParticipant = conv.participants[0];
+      const status = statusMap[otherParticipant._id.toString()];
+
+      return {
+        _id: conv._id,
+        participants: conv.participants.map((p) => ({
+          _id: p._id,
+          username: p.username,
+          email: p.email,
+          user_type: p.user_type,
+          isOnline: status?.isOnline || false,
+          lastSeen: status?.lastSeen || new Date(),
+        })),
+        lastMessage: conv.lastMessage,
+        lastMessageText: conv.lastMessageText,
+        lastMessageTime: conv.lastMessageTime,
+        unreadCount: conv.getUnreadCount ? conv.getUnreadCount(userId) : 0,
+        updatedAt: conv.updatedAt,
+      };
+    });
+
     const responseData = {
       message: "Conversations retrieved successfully",
       conversations: formattedConversations,
@@ -99,47 +74,50 @@ exports.getConversations = async (req, res) => {
     const encryptedData = encryptData(responseData);
     res.status(200).json({ data: encryptedData });
   } catch (err) {
-    console.error("Error getting conversations:", err);
+    console.error("Get conversations error:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
 
-// @desc    Get messages for a specific conversation
+// @desc    Get messages for a conversation
 // @route   POST /chat/messages
 // @access  Private
 exports.getMessages = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { conversation_id, limit = 50, page = 1 } = req.body;
+    const { conversation_id, page = 1, limit = 50 } = req.body;
 
     if (!conversation_id) {
       return res.status(400).json({ error: "Conversation ID is required" });
     }
 
-    // Check if user is a participant in this conversation
+    // Verify user is participant in conversation
     const conversation = await Conversation.findOne({
       _id: conversation_id,
       participants: userId,
+      isActive: true,
     });
 
     if (!conversation) {
       return res.status(404).json({ error: "Conversation not found" });
     }
 
-    // Calculate skip value for pagination
-    const skip = (page - 1) * limit;
-
-    // Get messages for this conversation
+    // Get messages with pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
     const messages = await Message.find({
       conversation: conversation_id,
       isDeleted: false,
     })
-      .populate("sender", "username user_type")
-      .sort({ createdAt: -1 }) // Newest first
+      .populate({
+        path: "sender",
+        select: "username email user_type",
+      })
+      .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(limit);
+      .limit(parseInt(limit))
+      .lean();
 
-    // Mark messages as read by current user
+    // Mark messages as read
     await Message.updateMany(
       {
         conversation: conversation_id,
@@ -149,39 +127,29 @@ exports.getMessages = async (req, res) => {
       { $addToSet: { readBy: userId } }
     );
 
-    // Reset unread count for this user in this conversation
-    conversation.unreadCount.set(userId, 0);
+    // Update conversation unread count
+    conversation.resetUnreadCount(userId);
     await conversation.save();
 
-    // Format messages for response
-    const formattedMessages = messages.map((message) => ({
-      _id: message._id,
-      text: message.text,
-      sender: message.sender,
-      isRead: message.readBy.includes(userId),
-      isEdited: message.isEdited,
-      attachments: message.attachments,
-      createdAt: message.createdAt,
-      updatedAt: message.updatedAt,
-    }));
-
-    // Encrypt and send response
     const responseData = {
       message: "Messages retrieved successfully",
-      messages: formattedMessages,
-      hasMore: formattedMessages.length === limit,
-      currentPage: page,
+      messages: messages.reverse(), // Return in chronological order
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        hasMore: messages.length === parseInt(limit),
+      },
     };
 
     const encryptedData = encryptData(responseData);
     res.status(200).json({ data: encryptedData });
   } catch (err) {
-    console.error("Error getting messages:", err);
+    console.error("Get messages error:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
 
-// @desc    Start or get an existing conversation with another user
+// @desc    Start or get existing conversation
 // @route   POST /chat/conversation/start
 // @access  Private
 exports.startConversation = async (req, res) => {
@@ -193,209 +161,197 @@ exports.startConversation = async (req, res) => {
       return res.status(400).json({ error: "Participant ID is required" });
     }
 
-    if (userId === participant_id) {
+    if (participant_id === userId) {
       return res
         .status(400)
         .json({ error: "Cannot start conversation with yourself" });
     }
 
     // Check if participant exists
-    const participant = await User.findById(participant_id);
+    const participant = await User.findById(participant_id).select(
+      "username email user_type"
+    );
     if (!participant) {
       return res.status(404).json({ error: "Participant not found" });
     }
 
-    // Check if a conversation already exists between these users
+    // Check if conversation already exists
     let conversation = await Conversation.findOne({
       participants: { $all: [userId, participant_id] },
-      $expr: { $eq: [{ $size: "$participants" }, 2] }, // Ensure it's a direct conversation (only 2 participants)
-    }).populate("participants", "username user_type email");
+      isActive: true,
+    });
 
-    // If no conversation exists, create a new one
     if (!conversation) {
-      conversation = new Conversation({
-        participants: [userId, participant_id],
-        unreadCount: new Map([
-          [participant_id, 0],
-          [userId, 0],
-        ]),
-      });
-
-      await conversation.save();
-
-      // Populate the participants after saving
-      conversation = await Conversation.findById(conversation._id).populate(
-        "participants",
-        "username user_type email"
-      );
+      // Create new conversation using the static method
+      conversation = await Conversation.createWithParticipants([
+        userId,
+        participant_id,
+      ]);
     }
 
-    // Get online status for the other participant
-    const participantStatus = await getOrCreateChatStatus(participant_id);
+    // Get participant status
+    const chatStatus = await ChatStatus.findOne({ user: participant_id });
 
-    // Format the conversation for response
-    const otherParticipant = conversation.participants.find(
-      (p) => p._id.toString() !== userId
-    );
-
-    const formattedConversation = {
-      _id: conversation._id,
-      participant: {
-        _id: otherParticipant._id,
-        username: otherParticipant.username,
-        user_type: otherParticipant.user_type,
-        email: otherParticipant.email,
-        isOnline: participantStatus.isOnline,
-        lastSeen: participantStatus.lastSeen,
-      },
-      lastMessage: null,
-      unreadCount: conversation.unreadCount.get(userId) || 0,
-      createdAt: conversation.createdAt,
-      updatedAt: conversation.updatedAt,
-    };
-
-    // Encrypt and send response
     const responseData = {
       message: "Conversation started successfully",
-      conversation: formattedConversation,
+      conversation: {
+        _id: conversation._id,
+        participant: {
+          _id: participant._id,
+          username: participant.username,
+          email: participant.email,
+          user_type: participant.user_type,
+          isOnline: chatStatus?.isOnline || false,
+          lastSeen: chatStatus?.lastSeen || new Date(),
+        },
+        lastMessage: conversation.lastMessage,
+        lastMessageText: conversation.lastMessageText,
+        lastMessageTime: conversation.lastMessageTime,
+        unreadCount: conversation.getUnreadCount
+          ? conversation.getUnreadCount(userId)
+          : 0,
+        createdAt: conversation.createdAt,
+        updatedAt: conversation.updatedAt,
+      },
     };
 
     const encryptedData = encryptData(responseData);
     res.status(200).json({ data: encryptedData });
   } catch (err) {
-    console.error("Error starting conversation:", err);
+    console.error("Start conversation error:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
 
-// @desc    Send a message in a conversation
+// @desc    Send a message
 // @route   POST /chat/send
 // @access  Private
 exports.sendMessage = async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
   try {
     const userId = req.user.id;
     const { conversation_id, text, attachments = [] } = req.body;
 
-    if (!conversation_id || !text) {
+    if (!conversation_id || !text?.trim()) {
       return res
         .status(400)
         .json({ error: "Conversation ID and message text are required" });
     }
 
-    // Check if user is a participant in this conversation
+    // Verify user is participant in conversation
     const conversation = await Conversation.findOne({
       _id: conversation_id,
       participants: userId,
-    }).session(session);
+      isActive: true,
+    });
 
     if (!conversation) {
-      await session.abortTransaction();
-      session.endSession();
       return res.status(404).json({ error: "Conversation not found" });
     }
 
-    // Create new message
-    const message = new Message({
+    // Get participant details separately to avoid the Map key issue
+    const participantDetails = await User.find({
+      _id: { $in: conversation.participants },
+    })
+      .select("username email user_type")
+      .lean();
+
+    // Create message
+    const message = await Message.create({
       conversation: conversation_id,
       sender: userId,
-      text,
+      text: text.trim(),
       attachments,
-      readBy: [userId], // Sender has already read it
+      readBy: [userId], // Sender has read the message
     });
 
-    await message.save({ session });
+    // Populate sender information
+    await message.populate({
+      path: "sender",
+      select: "username email user_type",
+    });
 
-    // Update conversation with last message
+    // Update conversation
     conversation.lastMessage = message._id;
-    conversation.lastMessageText = text;
+    conversation.lastMessageText = text.trim();
     conversation.lastMessageTime = message.createdAt;
 
-    // Increment unread count for all participants except sender
-    conversation.participants.forEach((participant) => {
-      if (participant.toString() !== userId) {
-        const currentCount =
-          conversation.unreadCount.get(participant.toString()) || 0;
-        conversation.unreadCount.set(participant.toString(), currentCount + 1);
+    // Update unread count for other participants
+    conversation.participants.forEach((participantId) => {
+      // participantId is guaranteed to be an ObjectId here since we didn't populate
+      const id = participantId.toString();
+      if (id !== userId) {
+        conversation.incrementUnreadCount(id);
       }
     });
 
-    await conversation.save({ session });
+    await conversation.save();
 
-    // Create notifications for other participants
-    const notifications = conversation.participants
-      .filter((participant) => participant.toString() !== userId)
-      .map((recipient) => ({
-        recipient,
-        sender: userId,
-        type: "message",
-        message: text.length > 50 ? text.substring(0, 47) + "..." : text,
-        conversation: conversation_id,
-      }));
+    // Get socket service from request
+    const socketService = req.socketService;
 
-    if (notifications.length > 0) {
-      await Notification.insertMany(notifications, { session });
-    }
-
-    // Get the sender details
-    const sender = await User.findById(userId).select("username user_type");
-
-    // Create formatted message for response
-    const formattedMessage = {
-      _id: message._id,
-      text: message.text,
-      sender: {
-        _id: sender._id,
-        username: sender.username,
-        user_type: sender.user_type,
-      },
-      conversation: conversation_id,
-      isRead: false,
-      isEdited: false,
-      attachments: message.attachments,
-      createdAt: message.createdAt,
-      updatedAt: message.updatedAt,
-    };
-
-    await session.commitTransaction();
-    session.endSession();
-
-    // Send real-time notification via WebSocket
-    if (req.socketService) {
-      const otherParticipants = conversation.participants.filter(
-        (p) => p.toString() !== userId
-      );
-
-      otherParticipants.forEach((recipientId) => {
-        req.socketService.emitToUser(recipientId.toString(), "newMessage", {
-          message: formattedMessage,
+    if (socketService) {
+      // Emit to conversation room (excluding sender)
+      socketService.emitToConversation(
+        conversation_id,
+        "newMessage",
+        {
+          message: {
+            _id: message._id,
+            text: message.text,
+            sender: message.sender,
+            conversation: conversation_id,
+            createdAt: message.createdAt,
+            attachments: message.attachments,
+            isRead: false,
+          },
           conversation: {
             _id: conversation._id,
-            unreadCount:
-              conversation.unreadCount.get(recipientId.toString()) || 0,
-            lastMessage: {
-              text: message.text,
-              createdAt: message.createdAt,
-            },
+            lastMessageText: conversation.lastMessageText,
+            lastMessageTime: conversation.lastMessageTime,
           },
+        },
+        userId
+      );
+
+      // Send notifications to offline users
+      const offlineParticipants = conversation.participants.filter(
+        (participantId) => {
+          const id = participantId.toString();
+          return id !== userId && !socketService.isUserConnected(id);
+        }
+      );
+
+      for (const participantId of offlineParticipants) {
+        await Notification.create({
+          recipient: participantId,
+          sender: userId,
+          type: "message",
+          message: `New message from ${req.user.username}: ${text.substring(
+            0,
+            50
+          )}...`,
+          conversation: conversation_id,
         });
-      });
+      }
     }
 
-    // Encrypt and send response
     const responseData = {
       message: "Message sent successfully",
-      sentMessage: formattedMessage,
+      sentMessage: {
+        _id: message._id,
+        text: message.text,
+        sender: message.sender,
+        conversation: conversation_id,
+        createdAt: message.createdAt,
+        attachments: message.attachments,
+        isRead: true, // For sender
+      },
     };
 
     const encryptedData = encryptData(responseData);
-    res.status(201).json({ data: encryptedData });
+    res.status(200).json({ data: encryptedData });
   } catch (err) {
-    await session.abortTransaction();
-    session.endSession();
-    console.error("Error sending message:", err);
+    console.error("Send message error:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
@@ -412,18 +368,19 @@ exports.markAsRead = async (req, res) => {
       return res.status(400).json({ error: "Conversation ID is required" });
     }
 
-    // Check if user is a participant
+    // Verify user is participant
     const conversation = await Conversation.findOne({
       _id: conversation_id,
       participants: userId,
+      isActive: true,
     });
 
     if (!conversation) {
       return res.status(404).json({ error: "Conversation not found" });
     }
 
-    // Mark all messages as read
-    const result = await Message.updateMany(
+    // Mark all unread messages as read
+    await Message.updateMany(
       {
         conversation: conversation_id,
         sender: { $ne: userId },
@@ -432,83 +389,62 @@ exports.markAsRead = async (req, res) => {
       { $addToSet: { readBy: userId } }
     );
 
-    // Update unread count in conversation
-    conversation.unreadCount.set(userId, 0);
+    // Update conversation unread count
+    conversation.resetUnreadCount(userId);
     await conversation.save();
 
-    // Notify other participants via WebSocket
-    if (req.socketService) {
-      const otherParticipants = conversation.participants.filter(
-        (p) => p.toString() !== userId
-      );
-
-      otherParticipants.forEach((recipientId) => {
-        req.socketService.emitToUser(recipientId.toString(), "messagesRead", {
+    // Emit read receipt via socket
+    const socketService = req.socketService;
+    if (socketService) {
+      socketService.emitToConversation(
+        conversation_id,
+        "messagesRead",
+        {
           conversation_id,
           reader: userId,
-        });
-      });
+          readAt: new Date(),
+        },
+        userId
+      );
     }
 
-    // Encrypt and send response
     const responseData = {
       message: "Messages marked as read",
-      updatedCount: result.nModified,
     };
 
     const encryptedData = encryptData(responseData);
     res.status(200).json({ data: encryptedData });
   } catch (err) {
-    console.error("Error marking messages as read:", err);
+    console.error("Mark as read error:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
 
-// @desc    Get online status of a user or users
+// @desc    Get user status
 // @route   POST /chat/status
 // @access  Private
 exports.getUserStatus = async (req, res) => {
   try {
-    const { user_ids } = req.body;
+    const { user_id } = req.body;
 
-    if (!user_ids || !Array.isArray(user_ids) || user_ids.length === 0) {
-      return res.status(400).json({ error: "User IDs array is required" });
+    if (!user_id) {
+      return res.status(400).json({ error: "User ID is required" });
     }
 
-    // Get status for the requested users
-    const statuses = await ChatStatus.find({
-      user: { $in: user_ids },
-    });
+    const chatStatus = await ChatStatus.findOne({ user: user_id });
 
-    // Format the statuses
-    const statusMap = {};
-    statuses.forEach((status) => {
-      statusMap[status.user.toString()] = {
-        isOnline: status.isOnline,
-        lastSeen: status.lastSeen,
-      };
-    });
-
-    // Add entries for users with no status record
-    user_ids.forEach((userId) => {
-      if (!statusMap[userId]) {
-        statusMap[userId] = {
-          isOnline: false,
-          lastSeen: null,
-        };
-      }
-    });
-
-    // Encrypt and send response
     const responseData = {
-      message: "User statuses retrieved successfully",
-      statuses: statusMap,
+      message: "User status retrieved successfully",
+      status: {
+        isOnline: chatStatus?.isOnline || false,
+        lastSeen: chatStatus?.lastSeen || new Date(),
+      },
     };
 
     const encryptedData = encryptData(responseData);
     res.status(200).json({ data: encryptedData });
   } catch (err) {
-    console.error("Error getting user status:", err);
+    console.error("Get user status error:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
@@ -525,47 +461,48 @@ exports.setTypingStatus = async (req, res) => {
       return res.status(400).json({ error: "Conversation ID is required" });
     }
 
-    // Check if user is a participant
+    // Verify user is participant
     const conversation = await Conversation.findOne({
       _id: conversation_id,
       participants: userId,
+      isActive: true,
     });
 
     if (!conversation) {
       return res.status(404).json({ error: "Conversation not found" });
     }
 
-    // Get or create chat status
-    const chatStatus = await getOrCreateChatStatus(userId);
-
     // Update typing status
-    chatStatus.isTyping.set(conversation_id, !!is_typing);
-    await chatStatus.save();
-
-    // Notify other participants via WebSocket
-    if (req.socketService) {
-      const otherParticipants = conversation.participants.filter(
-        (p) => p.toString() !== userId
-      );
-
-      otherParticipants.forEach((recipientId) => {
-        req.socketService.emitToUser(recipientId.toString(), "typingStatus", {
-          conversation_id,
-          user_id: userId,
-          is_typing,
-        });
-      });
+    const chatStatus = await ChatStatus.findOne({ user: userId });
+    if (chatStatus) {
+      chatStatus.isTyping.set(conversation_id, !!is_typing);
+      await chatStatus.save();
     }
 
-    // Encrypt and send response
+    // Emit typing status via socket
+    const socketService = req.socketService;
+    if (socketService) {
+      socketService.emitToConversation(
+        conversation_id,
+        "typingStatus",
+        {
+          conversation_id,
+          user_id: userId,
+          is_typing: !!is_typing,
+          username: req.user.username,
+        },
+        userId
+      );
+    }
+
     const responseData = {
-      message: `Typing status ${is_typing ? "started" : "stopped"}`,
+      message: "Typing status updated",
     };
 
     const encryptedData = encryptData(responseData);
     res.status(200).json({ data: encryptedData });
   } catch (err) {
-    console.error("Error setting typing status:", err);
+    console.error("Set typing status error:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
@@ -576,50 +513,36 @@ exports.setTypingStatus = async (req, res) => {
 exports.getNotifications = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { limit = 20, page = 1 } = req.query;
+    const { page = 1, limit = 20 } = req.query;
 
-    // Calculate skip value for pagination
-    const skip = (page - 1) * limit;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    // Get notifications for current user
     const notifications = await Notification.find({
       recipient: userId,
     })
-      .populate("sender", "username user_type")
+      .populate({
+        path: "sender",
+        select: "username email",
+      })
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(limit);
+      .limit(parseInt(limit))
+      .lean();
 
-    // Count unread notifications
-    const unreadCount = await Notification.countDocuments({
-      recipient: userId,
-      isRead: false,
-    });
-
-    // Format notifications for response
-    const formattedNotifications = notifications.map((notification) => ({
-      _id: notification._id,
-      sender: notification.sender,
-      type: notification.type,
-      message: notification.message,
-      conversation: notification.conversation,
-      isRead: notification.isRead,
-      createdAt: notification.createdAt,
-    }));
-
-    // Encrypt and send response
     const responseData = {
       message: "Notifications retrieved successfully",
-      notifications: formattedNotifications,
-      unreadCount,
-      hasMore: formattedNotifications.length === limit,
-      currentPage: page,
+      notifications,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        hasMore: notifications.length === parseInt(limit),
+      },
     };
 
     const encryptedData = encryptData(responseData);
     res.status(200).json({ data: encryptedData });
   } catch (err) {
-    console.error("Error getting notifications:", err);
+    console.error("Get notifications error:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
@@ -632,82 +555,81 @@ exports.markNotificationsAsRead = async (req, res) => {
     const userId = req.user.id;
     const { notification_ids } = req.body;
 
-    if (!notification_ids || !Array.isArray(notification_ids)) {
-      return res
-        .status(400)
-        .json({ error: "Notification IDs array is required" });
+    let query = { recipient: userId };
+    if (notification_ids && Array.isArray(notification_ids)) {
+      query._id = { $in: notification_ids };
     }
 
-    // Mark the specified notifications as read
-    const result = await Notification.updateMany(
-      {
-        _id: { $in: notification_ids },
-        recipient: userId,
-      },
-      { isRead: true }
-    );
+    await Notification.updateMany(query, { isRead: true });
 
-    // Encrypt and send response
     const responseData = {
       message: "Notifications marked as read",
-      updatedCount: result.nModified,
     };
 
     const encryptedData = encryptData(responseData);
     res.status(200).json({ data: encryptedData });
   } catch (err) {
-    console.error("Error marking notifications as read:", err);
+    console.error("Mark notifications as read error:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
 
-// @desc    Search users to start a conversation
+// @desc    Search users for chat
 // @route   POST /chat/search-users
 // @access  Private
 exports.searchUsers = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { query } = req.body;
+    const { query, user_type } = req.body;
 
-    if (!query || query.trim() === "") {
-      return res.status(400).json({ error: "Search query is required" });
+    if (!query || query.trim().length < 2) {
+      return res
+        .status(400)
+        .json({ error: "Search query must be at least 2 characters" });
     }
 
-    // Search users by username or email
-    const searchPattern = new RegExp(query, "i");
-    const users = await User.find({
-      $or: [{ username: searchPattern }, { email: searchPattern }],
-      _id: { $ne: userId }, // Don't include current user
-    })
+    // Build search criteria
+    const searchCriteria = {
+      _id: { $ne: userId }, // Exclude current user
+      $or: [
+        { username: { $regex: query.trim(), $options: "i" } },
+        { email: { $regex: query.trim(), $options: "i" } },
+      ],
+    };
+
+    if (user_type) {
+      searchCriteria.user_type = user_type;
+    }
+
+    const users = await User.find(searchCriteria)
       .select("username email user_type")
-      .limit(10);
+      .limit(20)
+      .lean();
 
     // Get online status for found users
     const userIds = users.map((user) => user._id);
-    const statuses = await ChatStatus.find({
+    const chatStatuses = await ChatStatus.find({
       user: { $in: userIds },
-    });
+    }).lean();
 
-    // Create map of user ID to online status
     const statusMap = {};
-    statuses.forEach((status) => {
-      statusMap[status.user.toString()] = {
-        isOnline: status.isOnline,
-        lastSeen: status.lastSeen,
-      };
+    chatStatuses.forEach((status) => {
+      statusMap[status.user.toString()] = status;
     });
 
     // Format users with status
-    const formattedUsers = users.map((user) => ({
-      _id: user._id,
-      username: user.username,
-      email: user.email,
-      user_type: user.user_type,
-      isOnline: statusMap[user._id.toString()]?.isOnline || false,
-      lastSeen: statusMap[user._id.toString()]?.lastSeen || null,
-    }));
+    const formattedUsers = users.map((user) => {
+      const status = statusMap[user._id.toString()];
+      return {
+        _id: user._id,
+        username: user.username,
+        email: user.email,
+        user_type: user.user_type,
+        isOnline: status?.isOnline || false,
+        lastSeen: status?.lastSeen || new Date(),
+      };
+    });
 
-    // Encrypt and send response
     const responseData = {
       message: "Users found",
       users: formattedUsers,
@@ -716,7 +638,7 @@ exports.searchUsers = async (req, res) => {
     const encryptedData = encryptData(responseData);
     res.status(200).json({ data: encryptedData });
   } catch (err) {
-    console.error("Error searching users:", err);
+    console.error("Search users error:", err);
     res.status(500).json({ error: "Server error" });
   }
 };

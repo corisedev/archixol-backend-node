@@ -147,6 +147,7 @@ exports.getJobsAndProjects = async (req, res) => {
       proposal_count: job.proposals ? job.proposals.length : 0,
       status: job.status,
       tags: job.tags,
+      urgent: job.urgent,
       required_skills: job.required_skills,
     }));
 

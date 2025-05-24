@@ -10,12 +10,6 @@ exports.validateCreateJob = [
     .isLength({ max: 200 })
     .withMessage("Title cannot be more than 200 characters"),
 
-  body("category")
-    .notEmpty()
-    .withMessage("Job type is required")
-    .isIn(["fixed", "hourly", "project"])
-    .withMessage("Job type must be one of: fixed, hourly, project"),
-
   body("details")
     .trim()
     .notEmpty()
