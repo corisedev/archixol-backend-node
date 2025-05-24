@@ -59,6 +59,10 @@ const ProjectJobSchema = new mongoose.Schema({
     required: [true, "Budget is required"],
     min: [0, "Budget must be positive"],
   },
+  starting_date: {
+    type: Date,
+    required: [true, "Starting Date is required"],
+  },
   timeline: {
     type: String,
     required: [true, "Timeline is required"],
@@ -68,6 +72,10 @@ const ProjectJobSchema = new mongoose.Schema({
     type: String,
     required: [true, "City is required"],
     trim: true,
+  },
+  note: {
+    type: String,
+    required: false,
   },
   address: {
     type: String,

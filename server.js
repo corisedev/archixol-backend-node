@@ -42,11 +42,11 @@ app.use("/profile", require("./routes/profileRoutes"));
 app.use("/company", require("./routes/companyRoutes"));
 app.use("/uploads/profile", require("./routes/profileUploadRoutes"));
 app.use("/uploads/service", require("./routes/serviceUploadRoutes"));
-app.use("/uploads/chat", require("./routes/chatUploadRoutes")); // New chat upload routes
+app.use("/uploads/chat", require("./routes/chatUploadRoutes"));
 app.use("/public", require("./routes/publicProfileRoutes"));
 app.use("/supplier", require("./routes/supplierRoutes"));
 app.use("/supplier", require("./routes/settingsRoutes"));
-app.use("/chat", require("./routes/chatRoutes")); // New chat routes
+app.use("/chat", require("./routes/chatRoutes"));
 app.use("/client", require("./routes/clientRoutes"));
 
 // WebSocket status endpoint

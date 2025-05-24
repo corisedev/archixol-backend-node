@@ -175,33 +175,34 @@ exports.createJob = async (req, res) => {
   try {
     const userId = req.user.id;
     const {
-      title,
-      type,
-      description,
-      budget,
-      timeline,
-      city,
-      address,
+      name,
+      category,
+      location,
+      starting_date,
+      days_project,
+      details,
       urgent,
+      budget,
       docs,
-      required_skills,
-      tags,
+      note,
     } = req.body;
 
     // Create new project job
     const projectJob = await ProjectJob.create({
       client_id: userId,
-      title,
-      type,
-      description,
-      budget,
-      timeline,
-      city,
-      address,
+      title: name,
+      type: category,
+      description: details,
+      budget: budget,
+      starting_date: starting_date,
+      timeline: days_project,
+      city: location,
+      address: location,
       urgent: urgent || false,
       docs: docs || [],
-      required_skills: required_skills || [],
-      tags: tags || [],
+      required_skills: [],
+      tags: [],
+      note: note,
     });
 
     const responseData = {
@@ -498,6 +499,13 @@ exports.getService = async (req, res) => {
       images: service.service_images || [],
       category: service.service_category,
       location: userProfile?.service_location || "Location not specified",
+      website: userProfile?.website,
+      faqs: service.service_faqs,
+      features: service.service_feature,
+      tags: service.service_tags,
+      total_jobs_completed: service.total_jobs_completed,
+      total_job_requests: service.total_job_requests,
+      total_pending_jobs: service.total_pending_jobs,
     };
 
     const responseData = {
