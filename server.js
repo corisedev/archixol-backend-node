@@ -47,6 +47,7 @@ app.use("/public", require("./routes/publicProfileRoutes"));
 app.use("/supplier", require("./routes/supplierRoutes"));
 app.use("/supplier", require("./routes/settingsRoutes"));
 app.use("/chat", require("./routes/chatRoutes")); // New chat routes
+app.use("/client", require("./routes/clientRoutes"));
 
 // WebSocket status endpoint
 app.get("/api/websocket-status", (req, res) => {
