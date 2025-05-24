@@ -357,8 +357,8 @@ exports.getProduct = async (req, res) => {
     // Format product for response
     const productData = {
       title: product.title,
-      price: product.price,
-      discounted_price: product.compare_at_price || product.price,
+      price: product.compare_at_price,
+      discounted_price: product.price,
       meta_description: product.meta_description,
       description: product.description,
       rating: 0, // You'll need to implement rating system
@@ -367,6 +367,13 @@ exports.getProduct = async (req, res) => {
       images: product.media || [],
       category: product.category,
       brand: product.supplier_id?.username || "Unknown Brand",
+      weight: product.weight,
+      units: product.units,
+      region: product.region,
+      address: product.address,
+      tags: product.search_tags,
+      qty: product.quantity,
+      variants: product.variants,
     };
 
     const responseData = {
@@ -393,33 +400,46 @@ exports.getServices = async (req, res) => {
     })
       .populate({
         path: "user",
-        select: "username",
-        populate: {
-          path: "user_id",
-          model: "UserProfile",
-          select: "service_location",
-        },
+        select: "username user_type",
       })
       .sort({ createdAt: -1 })
       .lean();
 
+    // Get user profiles for location information
+    const userIds = services
+      .map((service) => service.user?._id)
+      .filter(Boolean);
+    const UserProfile = require("../models/UserProfile");
+    const userProfiles = await UserProfile.find({
+      user_id: { $in: userIds },
+    }).lean();
+
+    // Create a map for quick lookup
+    const profileMap = {};
+    userProfiles.forEach((profile) => {
+      profileMap[profile.user_id.toString()] = profile;
+    });
+
     // Format services for response
-    const servicesList = services.map((service) => ({
-      service_id: service._id,
-      title: service.service_title,
-      price: 0, // You'll need to add pricing to Service model
-      description: service.service_description,
-      rating: service.rating || 0,
-      average_rating: service.rating || 0,
-      no_of_reviews: service.reviews_count || 0,
-      image:
-        service.service_images && service.service_images.length > 0
-          ? service.service_images[0]
-          : "",
-      category: service.service_category,
-      location:
-        service.user?.user_id?.service_location || "Location not specified",
-    }));
+    const servicesList = services.map((service) => {
+      const userProfile = profileMap[service.user?._id?.toString()];
+
+      return {
+        service_id: service._id,
+        title: service.service_title,
+        price: 0, // You'll need to add pricing to Service model
+        description: service.service_description,
+        rating: service.rating || 0,
+        average_rating: service.rating || 0,
+        no_of_reviews: service.reviews_count || 0,
+        image:
+          service.service_images && service.service_images.length > 0
+            ? service.service_images[0]
+            : "",
+        category: service.service_category,
+        location: userProfile?.service_location || "Location not specified",
+      };
+    });
 
     const responseData = {
       message: "Services retrieved successfully",
@@ -452,18 +472,19 @@ exports.getService = async (req, res) => {
     })
       .populate({
         path: "user",
-        select: "username",
-        populate: {
-          path: "user_id",
-          model: "UserProfile",
-          select: "service_location",
-        },
+        select: "username user_type",
       })
       .lean();
 
     if (!service) {
       return res.status(404).json({ error: "Service not found" });
     }
+
+    // Get user profile for location information
+    const UserProfile = require("../models/UserProfile");
+    const userProfile = await UserProfile.findOne({
+      user_id: service.user._id,
+    }).lean();
 
     // Format service for response
     const serviceData = {
@@ -476,8 +497,7 @@ exports.getService = async (req, res) => {
       no_of_reviews: service.reviews_count || 0,
       images: service.service_images || [],
       category: service.service_category,
-      location:
-        service.user?.user_id?.service_location || "Location not specified",
+      location: userProfile?.service_location || "Location not specified",
     };
 
     const responseData = {
@@ -513,6 +533,43 @@ exports.getMyProjects = async (req, res) => {
       })
       .sort({ createdAt: -1 })
       .lean();
+
+    // Calculate statistics
+    const totalProjects = projectJobs.length;
+
+    const activeProjects = projectJobs.filter((project) =>
+      ["open", "in_progress"].includes(project.status)
+    ).length;
+
+    const completedProjects = projectJobs.filter(
+      (project) => project.status === "completed"
+    ).length;
+
+    // Calculate total investments (sum of all project budgets)
+    const totalInvestments = projectJobs.reduce((sum, project) => {
+      return sum + (project.budget || 0);
+    }, 0);
+
+    // Create stats array
+    const stats = [
+      {
+        label: "Total Projects",
+        value: totalProjects,
+      },
+      {
+        label: "Active Projects",
+        value: activeProjects,
+      },
+      {
+        label: "Completed",
+        value: completedProjects,
+      },
+      {
+        label: "Total Investments",
+        value: totalInvestments,
+        isPrice: true,
+      },
+    ];
 
     // Format projects for response
     const projects = projectJobs.map((project) => {
@@ -579,6 +636,7 @@ exports.getMyProjects = async (req, res) => {
 
     const responseData = {
       message: "My projects retrieved successfully",
+      stats: stats,
       projects: projects,
     };
 
