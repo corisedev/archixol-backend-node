@@ -492,3 +492,100 @@ exports.getService = async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 };
+
+// @desc    Get My Projects
+// @route   GET /client/my-projects
+// @access  Private (Client Only)
+exports.getMyProjects = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Get all project jobs for this client
+    const projectJobs = await ProjectJob.find({ client_id: userId })
+      .populate({
+        path: "selected_provider",
+        select: "username",
+        populate: {
+          path: "user_id",
+          model: "UserProfile",
+          select: "profile_img",
+        },
+      })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Format projects for response
+    const projects = projectJobs.map((project) => {
+      // Calculate progress value based on status
+      let progressValue = 0;
+      switch (project.status) {
+        case "open":
+          progressValue = 10;
+          break;
+        case "in_progress":
+          progressValue = 50;
+          break;
+        case "completed":
+          progressValue = 100;
+          break;
+        case "cancelled":
+        case "closed":
+          progressValue = 0;
+          break;
+        default:
+          progressValue = 0;
+      }
+
+      // Get project image - either from docs or use a default/placeholder
+      let image = "";
+      if (project.docs && project.docs.length > 0) {
+        // Find the first image file from docs
+        const imageDoc = project.docs.find((doc) => {
+          const ext = doc.toLowerCase();
+          return (
+            ext.includes(".jpg") ||
+            ext.includes(".jpeg") ||
+            ext.includes(".png") ||
+            ext.includes(".gif") ||
+            ext.includes(".webp")
+          );
+        });
+        if (imageDoc) {
+          image = imageDoc;
+        }
+      }
+
+      // If no image found in docs, try to get from selected provider profile
+      if (!image && project.selected_provider?.user_id?.profile_img) {
+        image = project.selected_provider.user_id.profile_img;
+      }
+
+      // If still no image, use a placeholder or leave empty
+      if (!image) {
+        image = "/uploads/placeholders/project-placeholder.png"; // You can add a default image
+      }
+
+      return {
+        project_id: project._id,
+        image: image,
+        title: project.title,
+        description: project.description,
+        price: project.budget,
+        date: project.createdAt,
+        progressValue: progressValue,
+        status: project.status,
+      };
+    });
+
+    const responseData = {
+      message: "My projects retrieved successfully",
+      projects: projects,
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Get my projects error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};

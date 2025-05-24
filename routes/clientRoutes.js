@@ -12,6 +12,7 @@ const {
   getProduct,
   getServices,
   getService,
+  getMyProjects,
 } = require("../controllers/clientController");
 
 // Import profile controllers
@@ -123,5 +124,8 @@ router.post(
   validate,
   getService
 );
+
+// My Projects route
+router.get("/my-projects", getMyProjects);
 
 module.exports = router;
