@@ -3,20 +3,20 @@ const { body, query, validationResult } = require("express-validator");
 
 // Validate create job request
 exports.validateCreateJob = [
-  body("title")
+  body("name")
     .trim()
     .notEmpty()
     .withMessage("Job title is required")
     .isLength({ max: 200 })
     .withMessage("Title cannot be more than 200 characters"),
 
-  body("type")
+  body("category")
     .notEmpty()
     .withMessage("Job type is required")
     .isIn(["fixed", "hourly", "project"])
     .withMessage("Job type must be one of: fixed, hourly, project"),
 
-  body("description")
+  body("details")
     .trim()
     .notEmpty()
     .withMessage("Job description is required")
@@ -29,21 +29,21 @@ exports.validateCreateJob = [
     .isFloat({ min: 0 })
     .withMessage("Budget must be a positive number"),
 
-  body("timeline")
+  body("days_project")
     .trim()
     .notEmpty()
     .withMessage("Timeline is required")
     .isLength({ max: 100 })
     .withMessage("Timeline cannot be more than 100 characters"),
 
-  body("city")
+  body("location")
     .trim()
     .notEmpty()
     .withMessage("City is required")
     .isLength({ max: 100 })
     .withMessage("City cannot be more than 100 characters"),
 
-  body("address")
+  body("location")
     .trim()
     .notEmpty()
     .withMessage("Address is required")
