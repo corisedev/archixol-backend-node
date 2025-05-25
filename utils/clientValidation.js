@@ -350,6 +350,59 @@ exports.validateServicesQuery = [
     .withMessage("Limit must be between 1 and 100"),
 ];
 
+exports.validateGetJobProposals = [
+  body("job_id")
+    .notEmpty()
+    .withMessage("Job ID is required")
+    .isMongoId()
+    .withMessage("Invalid job ID format"),
+];
+
+// Validate get my jobs query parameters
+exports.validateGetMyJobs = [
+  query("status")
+    .optional()
+    .isIn(["open", "in_progress", "completed", "cancelled", "closed"])
+    .withMessage("Invalid status value"),
+
+  query("page")
+    .optional()
+    .isInt({ min: 1 })
+    .withMessage("Page must be a positive integer"),
+
+  query("limit")
+    .optional()
+    .isInt({ min: 1, max: 50 })
+    .withMessage("Limit must be between 1 and 50"),
+];
+
+// Validate proposal action request (accept/reject proposal)
+exports.validateProposalAction = [
+  body("job_id")
+    .notEmpty()
+    .withMessage("Job ID is required")
+    .isMongoId()
+    .withMessage("Invalid job ID format"),
+
+  body("proposal_id")
+    .notEmpty()
+    .withMessage("Proposal ID is required")
+    .isMongoId()
+    .withMessage("Invalid proposal ID format"),
+
+  body("action")
+    .notEmpty()
+    .withMessage("Action is required")
+    .isIn(["accept", "reject"])
+    .withMessage("Invalid action. Must be 'accept' or 'reject'"),
+
+  body("message")
+    .optional()
+    .trim()
+    .isLength({ max: 500 })
+    .withMessage("Message cannot be more than 500 characters"),
+];
+
 // Validation results check
 exports.validate = (req, res, next) => {
   const errors = validationResult(req);

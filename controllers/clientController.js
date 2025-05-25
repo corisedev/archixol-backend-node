@@ -5,6 +5,7 @@ const ProjectJob = require("../models/ProjectJob");
 const ClientOrder = require("../models/ClientOrder");
 const Product = require("../models/Product");
 const Service = require("../models/Service");
+const UserProfile = require("../models/UserProfile");
 const { encryptData } = require("../utils/encryptResponse");
 
 // @desc    Get client dashboard data
@@ -676,6 +677,319 @@ exports.getMyProjects = async (req, res) => {
     res.status(200).json({ data: encryptedData });
   } catch (err) {
     console.error("Get my projects error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Get all proposals for a specific job posted by client
+// @route   POST /client/get_job_proposals
+// @access  Private (Client Only)
+exports.getJobProposals = async (req, res) => {
+  try {
+    const { job_id } = req.body;
+    const userId = req.user.id;
+
+    if (!job_id) {
+      return res.status(400).json({ error: "Job ID is required" });
+    }
+
+    // Get the project job and verify it belongs to this client
+    const projectJob = await ProjectJob.findOne({
+      _id: job_id,
+      client_id: userId,
+    }).populate("client_id", "username email user_type");
+
+    if (!projectJob) {
+      return res.status(404).json({
+        error: "Job not found or you don't have permission to view it",
+      });
+    }
+
+    // Get detailed information for each proposal
+    const proposalsWithDetails = await Promise.all(
+      projectJob.proposals.map(async (proposal) => {
+        try {
+          // Get service provider basic info
+          const serviceProvider = await User.findById(
+            proposal.service_provider_id
+          ).select("username email user_type createdAt");
+
+          if (!serviceProvider) {
+            return null; // Skip if service provider not found
+          }
+
+          // Get service provider profile
+          const providerProfile = await UserProfile.findOne({
+            user_id: proposal.service_provider_id,
+          });
+
+          // Get service provider's services
+          const providerServices = await Service.find({
+            user: proposal.service_provider_id,
+          }).select(
+            "service_title service_category service_status total_job_requests total_jobs_completed rating"
+          );
+
+          // Get total statistics for this service provider
+          const totalApplications = await Job.countDocuments({
+            service_provider: proposal.service_provider_id,
+          });
+
+          const completedJobs = await Job.countDocuments({
+            service_provider: proposal.service_provider_id,
+            status: "completed",
+          });
+
+          const successRate =
+            totalApplications > 0
+              ? Math.round((completedJobs / totalApplications) * 100)
+              : 0;
+
+          // Calculate average rating from services
+          const avgRating =
+            providerServices.length > 0
+              ? providerServices.reduce(
+                  (sum, service) => sum + (service.rating || 0),
+                  0
+                ) / providerServices.length
+              : 0;
+
+          // Format the proposal with complete details
+          const proposalWithDetails = {
+            // Proposal details
+            proposal_id: proposal._id,
+            proposal_text: proposal.proposal_text,
+            proposed_budget: proposal.proposed_budget,
+            proposed_timeline: proposal.proposed_timeline,
+            proposal_status: proposal.status,
+            submitted_at: proposal.submitted_at,
+
+            // Service provider basic info
+            service_provider: {
+              id: serviceProvider._id,
+              username: serviceProvider.username,
+              email: serviceProvider.email,
+              user_type: serviceProvider.user_type,
+              member_since: serviceProvider.createdAt,
+            },
+
+            // Service provider profile
+            provider_profile: providerProfile
+              ? {
+                  fullname: providerProfile.fullname,
+                  phone_number: providerProfile.phone_number,
+                  experience: providerProfile.experience,
+                  address: providerProfile.address,
+                  service_location: providerProfile.service_location,
+                  introduction: providerProfile.introduction,
+                  website: providerProfile.website,
+                  profile_img: providerProfile.profile_img,
+                  banner_img: providerProfile.banner_img,
+                  services_tags: providerProfile.services_tags,
+                }
+              : null,
+
+            // Service provider services
+            provider_services: providerServices.map((service) => ({
+              id: service._id,
+              service_title: service.service_title,
+              service_category: service.service_category,
+              service_status: service.service_status,
+              rating: service.rating,
+            })),
+
+            // Statistics
+            provider_stats: {
+              total_applications: totalApplications,
+              completed_jobs: completedJobs,
+              success_rate: successRate,
+              average_rating: Math.round(avgRating * 10) / 10, // Round to 1 decimal
+              total_services: providerServices.length,
+              active_services: providerServices.filter((s) => s.service_status)
+                .length,
+            },
+
+            // Match score (how well this provider matches the job)
+            match_score: {
+              category_match: providerServices.some(
+                (s) => s.service_category === projectJob.type
+              ),
+              experience_level: providerProfile?.experience || 0,
+              location_match:
+                providerProfile?.service_location
+                  ?.toLowerCase()
+                  .includes(projectJob.city?.toLowerCase() || "") || false,
+            },
+          };
+
+          return proposalWithDetails;
+        } catch (error) {
+          console.error(`Error processing proposal ${proposal._id}:`, error);
+          return null;
+        }
+      })
+    );
+
+    // Filter out null proposals (where service provider wasn't found)
+    const validProposals = proposalsWithDetails.filter(
+      (proposal) => proposal !== null
+    );
+
+    // Sort proposals by various criteria
+    const sortedProposals = validProposals.sort((a, b) => {
+      // Primary sort: Status (pending first)
+      if (a.proposal_status !== b.proposal_status) {
+        if (a.proposal_status === "pending") return -1;
+        if (b.proposal_status === "pending") return 1;
+      }
+
+      // Secondary sort: Success rate (highest first)
+      if (b.provider_stats.success_rate !== a.provider_stats.success_rate) {
+        return b.provider_stats.success_rate - a.provider_stats.success_rate;
+      }
+
+      // Tertiary sort: Submitted date (newest first)
+      return new Date(b.submitted_at) - new Date(a.submitted_at);
+    });
+
+    // Format job details
+    const jobDetails = {
+      id: projectJob._id,
+      title: projectJob.title,
+      description: projectJob.description,
+      budget: projectJob.budget,
+      timeline: projectJob.timeline,
+      city: projectJob.city,
+      status: projectJob.status,
+      type: projectJob.type,
+      urgent: projectJob.urgent,
+      created_at: projectJob.createdAt,
+      total_proposals: validProposals.length,
+    };
+
+    const responseData = {
+      message: "Job proposals retrieved successfully",
+      job: jobDetails,
+      proposals: sortedProposals,
+      summary: {
+        total_proposals: validProposals.length,
+        pending_proposals: validProposals.filter(
+          (p) => p.proposal_status === "pending"
+        ).length,
+        accepted_proposals: validProposals.filter(
+          (p) => p.proposal_status === "accepted"
+        ).length,
+        rejected_proposals: validProposals.filter(
+          (p) => p.proposal_status === "rejected"
+        ).length,
+        average_proposed_budget:
+          validProposals.length > 0
+            ? Math.round(
+                validProposals.reduce((sum, p) => sum + p.proposed_budget, 0) /
+                  validProposals.length
+              )
+            : 0,
+        budget_range:
+          validProposals.length > 0
+            ? {
+                min: Math.min(...validProposals.map((p) => p.proposed_budget)),
+                max: Math.max(...validProposals.map((p) => p.proposed_budget)),
+              }
+            : null,
+      },
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error in getJobProposals:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Get all jobs posted by client with proposal counts
+// @route   GET /client/my_jobs
+// @access  Private (Client Only)
+exports.getMyJobs = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { status, page = 1, limit = 10 } = req.query;
+
+    // Build query
+    let query = { client_id: userId };
+    if (status) {
+      query.status = status;
+    }
+
+    // Setup pagination
+    const skip = (page - 1) * limit;
+
+    // Get jobs with pagination
+    const jobs = await ProjectJob.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const totalJobs = await ProjectJob.countDocuments(query);
+
+    // Format jobs with proposal information
+    const formattedJobs = jobs.map((job) => {
+      const jobObj = job.toObject();
+      jobObj.id = jobObj._id;
+      delete jobObj._id;
+
+      // Add proposal statistics
+      const proposals = job.proposals || [];
+      jobObj.proposal_stats = {
+        total_proposals: proposals.length,
+        pending_proposals: proposals.filter((p) => p.status === "pending")
+          .length,
+        accepted_proposals: proposals.filter((p) => p.status === "accepted")
+          .length,
+        rejected_proposals: proposals.filter((p) => p.status === "rejected")
+          .length,
+        has_proposals: proposals.length > 0,
+      };
+
+      // Add budget range from proposals
+      if (proposals.length > 0) {
+        const budgets = proposals.map((p) => p.proposed_budget);
+        jobObj.proposal_budget_range = {
+          min: Math.min(...budgets),
+          max: Math.max(...budgets),
+          average: Math.round(
+            budgets.reduce((sum, b) => sum + b, 0) / budgets.length
+          ),
+        };
+      }
+
+      return jobObj;
+    });
+
+    const responseData = {
+      message: "Your jobs retrieved successfully",
+      jobs: formattedJobs,
+      pagination: {
+        current_page: parseInt(page),
+        total_pages: Math.ceil(totalJobs / limit),
+        total_jobs: totalJobs,
+        per_page: parseInt(limit),
+      },
+      summary: {
+        total_jobs: totalJobs,
+        jobs_with_proposals: formattedJobs.filter(
+          (j) => j.proposal_stats.has_proposals
+        ).length,
+        jobs_without_proposals: formattedJobs.filter(
+          (j) => !j.proposal_stats.has_proposals
+        ).length,
+      },
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error in getMyJobs:", err);
     res.status(500).json({ error: "Server error" });
   }
 };

@@ -13,6 +13,8 @@ const {
   getServices,
   getService,
   getMyProjects,
+  getJobProposals,
+  getMyJobs,
 } = require("../controllers/clientController");
 
 // Import profile controllers
@@ -44,6 +46,9 @@ const {
   validateGetProduct,
   validateGetService,
   validate,
+  validateGetJobProposals,
+  validateProposals,
+  validateGetMyJobs,
 } = require("../utils/clientValidation");
 const {
   validateClientProfileUpdate,
@@ -124,6 +129,22 @@ router.post(
   validate,
   getService
 );
+
+// @desc    Get all proposals for a specific job
+// @route   POST /client/get_job_proposals
+// @access  Private (Client Only)
+router.post(
+  "/get_job_proposals",
+  decryptRequest,
+  validateGetJobProposals,
+  validate,
+  getJobProposals
+);
+
+// @desc    Get all jobs posted by client with proposal counts
+// @route   GET /client/my_jobs
+// @access  Private (Client Only)
+router.get("/my_jobs", validateGetMyJobs, validate, getMyJobs);
 
 // My Projects route
 router.get("/my-projects", getMyProjects);
