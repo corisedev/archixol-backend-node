@@ -2,6 +2,7 @@
 const ProjectJob = require("../models/ProjectJob");
 const Job = require("../models/Job");
 const Service = require("../models/Service");
+const SavedJob = require("../models/SavedJob");
 const { encryptData } = require("../utils/encryptResponse");
 
 // @desc    Get all available jobs matching service provider's service categories
@@ -136,17 +137,35 @@ exports.getAvailableJobs = async (req, res) => {
     }
 
     // ==================== END STATISTICS CALCULATION ====================
+    const savedJobs = await SavedJob.find({
+      service_provider: userId,
+      project_job: { $ne: null, $exists: true }, // Only valid project_job references
+    }).distinct("project_job");
 
+    savedJobIds = savedJobs
+      .filter((id) => id != null) // Filter out null/undefined
+      .map((id) => id.toString());
     // Add application status to each job
     const jobsWithApplicationStatus = availableJobs.map((job) => {
       const jobObj = job.toObject();
       jobObj.id = jobObj._id;
       delete jobObj._id;
 
-      // Add application status
-      jobObj.has_applied = appliedJobIds.some(
-        (appliedId) => appliedId.toString() === job._id.toString()
-      );
+      // Check application status by looking at proposals in ProjectJob
+      // Look for user ID in the proposals array of this job
+      const userProposal =
+        job.proposals &&
+        job.proposals.find(
+          (proposal) =>
+            proposal.service_provider_id &&
+            proposal.service_provider_id.toString() === userId
+        );
+      jobObj.has_applied = !!userProposal;
+
+      // Add saved status
+      jobObj.is_saved = job._id
+        ? savedJobIds.includes(job._id.toString())
+        : false;
 
       // Add proposal count
       jobObj.proposal_count = job.proposals ? job.proposals.length : 0;
