@@ -47,6 +47,14 @@ const ProjectJobSchema = new mongoose.Schema({
     required: [true, "Job type is required"],
     default: "project",
   },
+  // ADD THIS NEW FIELD FOR JOB CATEGORY
+  category: {
+    type: String,
+    required: [true, "Job category is required"],
+    trim: true,
+    lowercase: true, // Ensure consistent casing
+    maxlength: [100, "Category cannot be more than 100 characters"],
+  },
   description: {
     type: String,
     required: [true, "Job description is required"],
@@ -137,6 +145,12 @@ ProjectJobSchema.virtual("proposal_count").get(function () {
 // Update the 'updatedAt' field before saving
 ProjectJobSchema.pre("save", function (next) {
   this.updatedAt = Date.now();
+
+  // Normalize category to lowercase to avoid casing issues
+  if (this.category) {
+    this.category = this.category.toLowerCase().trim();
+  }
+
   next();
 });
 

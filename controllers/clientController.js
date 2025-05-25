@@ -174,52 +174,75 @@ exports.getJobsAndProjects = async (req, res) => {
 // @access  Private (Client Only)
 exports.createJob = async (req, res) => {
   try {
-    const userId = req.user.id;
     const {
-      name,
-      category,
-      location,
-      starting_date,
-      days_project,
-      details,
-      urgent,
+      name: title,
+      category, // ADD THIS
+      details: description,
       budget,
-      docs,
-      note,
+      days_project: timeline,
+      location: city,
+      location: address,
+      urgent = false,
+      note = "",
+      docs = [],
+      required_skills = [],
+      tags = [],
+      starting_date, // ADD THIS IF NEEDED
     } = req.body;
 
-    // Create new project job
+    const clientId = req.user.id;
+
+    // Normalize category to lowercase
+    const normalizedCategory = category ? category.toLowerCase().trim() : "";
+
+    console.log("Creating job with category:", normalizedCategory);
+
+    // Create project job
     const projectJob = await ProjectJob.create({
-      client_id: userId,
-      title: name,
-      type: category,
-      description: details,
-      budget: budget,
-      starting_date: starting_date,
-      timeline: days_project,
-      city: location,
-      address: location,
-      urgent: urgent || false,
-      docs: docs || [],
-      required_skills: [],
-      tags: [],
-      note: note,
+      client_id: clientId,
+      title,
+      category: normalizedCategory, // ADD THIS
+      description,
+      budget: Number(budget),
+      starting_date: starting_date || new Date(), // Use provided date or current date
+      timeline,
+      city,
+      address,
+      urgent: Boolean(urgent),
+      note,
+      docs,
+      required_skills,
+      tags,
+      status: "open",
     });
+
+    console.log("Job created successfully with ID:", projectJob._id);
 
     const responseData = {
       message: "Job created successfully",
-      job_id: projectJob._id,
+      job: {
+        id: projectJob._id,
+        title: projectJob.title,
+        category: projectJob.category,
+        description: projectJob.description,
+        budget: projectJob.budget,
+        timeline: projectJob.timeline,
+        city: projectJob.city,
+        address: projectJob.address,
+        urgent: projectJob.urgent,
+        status: projectJob.status,
+        created_at: projectJob.createdAt,
+      },
     };
 
     const encryptedData = encryptData(responseData);
     res.status(201).json({ data: encryptedData });
   } catch (err) {
-    console.error("Create job error:", err);
+    console.error("Error in createJob:", err);
 
-    // Check for validation errors
     if (err.name === "ValidationError") {
-      const messages = Object.values(err.errors).map((val) => val.message);
-      return res.status(400).json({ error: messages.join(", ") });
+      const validationErrors = Object.values(err.errors).map((e) => e.message);
+      return res.status(400).json({ error: validationErrors[0] });
     }
 
     res.status(500).json({ error: "Server error" });

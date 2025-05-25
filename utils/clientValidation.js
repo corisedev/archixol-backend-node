@@ -10,6 +10,18 @@ exports.validateCreateJob = [
     .isLength({ max: 200 })
     .withMessage("Title cannot be more than 200 characters"),
 
+  // ADD CATEGORY VALIDATION
+  body("category")
+    .trim()
+    .notEmpty()
+    .withMessage("Job category is required")
+    .isLength({ max: 100 })
+    .withMessage("Category cannot be more than 100 characters")
+    .customSanitizer((value) => {
+      // Normalize to lowercase to match service categories
+      return value.toLowerCase().trim();
+    }),
+
   body("details")
     .trim()
     .notEmpty()
@@ -36,13 +48,6 @@ exports.validateCreateJob = [
     .withMessage("City is required")
     .isLength({ max: 100 })
     .withMessage("City cannot be more than 100 characters"),
-
-  body("location")
-    .trim()
-    .notEmpty()
-    .withMessage("Address is required")
-    .isLength({ max: 500 })
-    .withMessage("Address cannot be more than 500 characters"),
 
   body("urgent")
     .optional()

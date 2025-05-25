@@ -23,9 +23,16 @@ exports.getAvailableJobs = async (req, res) => {
       sort_order = "desc",
     } = req.query;
 
+    console.log(`Getting available jobs for user: ${userId}`);
+
     // Get all services created by this service provider to determine their categories
     const userServices = await Service.find({ user: userId }).select(
       "service_category"
+    );
+
+    console.log(
+      `Found ${userServices.length} services for user:`,
+      userServices.map((s) => s.service_category)
     );
 
     if (!userServices || userServices.length === 0) {
@@ -35,21 +42,27 @@ exports.getAvailableJobs = async (req, res) => {
       });
     }
 
-    // Extract unique service categories
+    // Extract unique service categories and normalize to lowercase
     const serviceCategories = [
-      ...new Set(userServices.map((service) => service.service_category)),
+      ...new Set(
+        userServices.map((service) =>
+          service.service_category.toLowerCase().trim()
+        )
+      ),
     ];
 
-    // Build query for filtering
+    console.log(`Normalized service categories:`, serviceCategories);
+
+    // Build query for filtering with proper category matching
     let query = {
-      type: { $in: serviceCategories }, // Match job type with service categories
+      category: { $in: serviceCategories }, // Match job category with service categories
       status: "open", // Only open jobs
       selected_provider: null, // Jobs that haven't been assigned yet
     };
 
     // Apply additional filters
-    if (category && serviceCategories.includes(category)) {
-      query.type = category;
+    if (category && serviceCategories.includes(category.toLowerCase().trim())) {
+      query.category = category.toLowerCase().trim();
     }
 
     if (budget_min || budget_max) {
@@ -65,6 +78,8 @@ exports.getAvailableJobs = async (req, res) => {
     if (urgent !== undefined) {
       query.urgent = urgent === "true";
     }
+
+    console.log("Final query:", JSON.stringify(query, null, 2));
 
     // Setup sorting
     let sortOptions = {};
@@ -86,6 +101,7 @@ exports.getAvailableJobs = async (req, res) => {
 
     // Get total count for pagination
     const totalJobs = await ProjectJob.countDocuments(query);
+    console.log(`Total jobs matching query: ${totalJobs}`);
 
     // Get jobs with pagination
     const availableJobs = await ProjectJob.find(query)
@@ -94,30 +110,37 @@ exports.getAvailableJobs = async (req, res) => {
       .skip(skip)
       .limit(parseInt(limit));
 
-    // Check which jobs this service provider has already applied to
-    const appliedJobIds = await Job.find({
-      service_provider: userId,
-      project_job: { $in: availableJobs.map((job) => job._id) },
-    }).distinct("project_job");
+    console.log(`Retrieved ${availableJobs.length} jobs for display`);
+
+    // Get applications for this user to check which jobs they've applied to
+    const userApplications = await Job.find({ service_provider: userId });
+    const appliedJobIds = userApplications
+      .map((app) => app.project_job?.toString())
+      .filter(Boolean);
+
+    console.log(`User has applied to ${appliedJobIds.length} jobs`);
 
     // ==================== CALCULATE STATISTICS ====================
 
-    // Get all applications by this service provider
-    const allApplications = await Job.find({ service_provider: userId });
-
     // Applied jobs count
-    const applied_jobs = allApplications.length;
+    const applied_jobs = userApplications.length;
 
-    // Available jobs count (total matching jobs they haven't applied to)
-    const available_jobs = await ProjectJob.countDocuments({
-      type: { $in: serviceCategories },
+    // Available jobs count (all matching category jobs they haven't applied to)
+    const available_jobs_query = {
+      category: { $in: serviceCategories },
       status: "open",
       selected_provider: null,
-      _id: { $nin: allApplications.map((app) => app.project_job) },
-    });
+      _id: {
+        $nin: userApplications.map((app) => app.project_job).filter(Boolean),
+      },
+    };
+
+    const available_jobs = await ProjectJob.countDocuments(
+      available_jobs_query
+    );
 
     // Success rate calculation (accepted + completed jobs / total applications)
-    const successfulApplications = allApplications.filter(
+    const successfulApplications = userApplications.filter(
       (app) => app.status === "accepted" || app.status === "completed"
     ).length;
     const success_rate =
@@ -125,26 +148,32 @@ exports.getAvailableJobs = async (req, res) => {
         ? Math.round((successfulApplications / applied_jobs) * 100)
         : 0;
 
-    // Get saved jobs count (we'll need to create a SavedJob model or add to existing model)
+    // Get saved jobs count
     let saved_jobs = 0;
     try {
-      const SavedJob = require("../models/SavedJob");
       saved_jobs = await SavedJob.countDocuments({ service_provider: userId });
     } catch (error) {
-      // If SavedJob model doesn't exist, default to 0
       console.log("SavedJob model not found, setting saved_jobs to 0");
       saved_jobs = 0;
     }
 
     // ==================== END STATISTICS CALCULATION ====================
-    const savedJobs = await SavedJob.find({
-      service_provider: userId,
-      project_job: { $ne: null, $exists: true }, // Only valid project_job references
-    }).distinct("project_job");
 
-    savedJobIds = savedJobs
-      .filter((id) => id != null) // Filter out null/undefined
-      .map((id) => id.toString());
+    // Get saved job IDs
+    let savedJobIds = [];
+    try {
+      const savedJobs = await SavedJob.find({
+        service_provider: userId,
+        project_job: { $ne: null, $exists: true },
+      }).distinct("project_job");
+
+      savedJobIds = savedJobs
+        .filter((id) => id != null)
+        .map((id) => id.toString());
+    } catch (error) {
+      console.log("Error getting saved jobs:", error.message);
+    }
+
     // Add application status to each job
     const jobsWithApplicationStatus = availableJobs.map((job) => {
       const jobObj = job.toObject();
@@ -243,7 +272,7 @@ exports.getJobDetails = async (req, res) => {
       "service_title service_category service_description service_status service_images"
     );
 
-    // Check if service provider has already applied
+    // Check if service provider has already applied using Job model
     const existingApplication = await Job.findOne({
       service_provider: userId,
       project_job: job_id,
@@ -253,7 +282,7 @@ exports.getJobDetails = async (req, res) => {
     jobObj.id = jobObj._id;
     delete jobObj._id;
 
-    // Add application status and user's proposal if exists
+    // Add application status
     jobObj.has_applied = !!existingApplication;
     if (existingApplication) {
       jobObj.application_status = existingApplication.status;
@@ -262,7 +291,10 @@ exports.getJobDetails = async (req, res) => {
 
     // Find user's proposal in the proposals array
     const userProposal = projectJob.proposals.find(
-      (proposal) => proposal.service_provider_id._id.toString() === userId
+      (proposal) =>
+        proposal.service_provider_id &&
+        proposal.service_provider_id._id &&
+        proposal.service_provider_id._id.toString() === userId
     );
 
     if (userProposal) {
@@ -275,9 +307,10 @@ exports.getJobDetails = async (req, res) => {
       serviceObj.id = serviceObj._id;
       delete serviceObj._id;
 
-      // Check if this service category matches the job type
+      // Check if this service category matches the job category (case-insensitive)
       serviceObj.matches_job_type =
-        service.service_category === projectJob.type;
+        service.service_category.toLowerCase().trim() ===
+        projectJob.category?.toLowerCase().trim();
 
       return serviceObj;
     });
@@ -285,14 +318,13 @@ exports.getJobDetails = async (req, res) => {
     // Check if job is saved by this user
     let is_saved = false;
     try {
-      const SavedJob = require("../models/SavedJob");
       const savedJob = await SavedJob.findOne({
         service_provider: userId,
         project_job: job_id,
       });
       is_saved = !!savedJob;
     } catch (error) {
-      // SavedJob model not found, default to false
+      console.log("Error checking saved status:", error.message);
       is_saved = false;
     }
 
@@ -355,7 +387,7 @@ exports.applyForJob = async (req, res) => {
         .json({ error: "This job has already been assigned to a provider" });
     }
 
-    // Check if service provider has already applied
+    // Check if service provider has already applied using Job model
     const existingApplication = await Job.findOne({
       service_provider: userId,
       project_job: job_id,
@@ -377,10 +409,13 @@ exports.applyForJob = async (req, res) => {
           .json({ error: "Service not found or doesn't belong to you" });
       }
 
-      // Check if service category matches job type
-      if (service.service_category !== projectJob.type) {
+      // Check if service category matches job category (case-insensitive)
+      const serviceCategory = service.service_category.toLowerCase().trim();
+      const jobCategory = projectJob.category?.toLowerCase().trim();
+
+      if (jobCategory && serviceCategory !== jobCategory) {
         return res.status(400).json({
-          error: "Your service category doesn't match this job type",
+          error: "Your service category doesn't match this job category",
         });
       }
     }
@@ -614,8 +649,6 @@ exports.updateApplication = async (req, res) => {
   }
 };
 
-// ADD THIS TO: controllers/serviceProviderJobController.js
-
 // @desc    Save a job for later
 // @route   POST /service/save_job
 // @access  Private (Service Provider Only)
@@ -637,41 +670,6 @@ exports.saveJob = async (req, res) => {
     // Check if job is still available
     if (projectJob.status !== "open") {
       return res.status(400).json({ error: "This job is no longer available" });
-    }
-
-    // Try to import SavedJob model, create a simple saved jobs tracking
-    let SavedJob;
-    try {
-      SavedJob = require("../models/SavedJob");
-    } catch (error) {
-      // If SavedJob model doesn't exist, we'll create a simple schema inline
-      // In production, you should create a proper SavedJob model
-      const mongoose = require("mongoose");
-
-      const SavedJobSchema = new mongoose.Schema({
-        service_provider: {
-          type: mongoose.Schema.Types.ObjectId,
-          ref: "User",
-          required: true,
-        },
-        project_job: {
-          type: mongoose.Schema.Types.ObjectId,
-          ref: "ProjectJob",
-          required: true,
-        },
-        saved_at: {
-          type: Date,
-          default: Date.now,
-        },
-      });
-
-      // Create compound index to prevent duplicate saves
-      SavedJobSchema.index(
-        { service_provider: 1, project_job: 1 },
-        { unique: true }
-      );
-
-      SavedJob = mongoose.model("SavedJob", SavedJobSchema);
     }
 
     // Check if job is already saved
@@ -722,16 +720,6 @@ exports.unsaveJob = async (req, res) => {
       return res.status(400).json({ error: "Job ID is required" });
     }
 
-    // Try to import SavedJob model
-    let SavedJob;
-    try {
-      SavedJob = require("../models/SavedJob");
-    } catch (error) {
-      return res
-        .status(400)
-        .json({ error: "Saved jobs feature not available" });
-    }
-
     // Find and remove the saved job
     const savedJob = await SavedJob.findOneAndDelete({
       service_provider: userId,
@@ -766,25 +754,6 @@ exports.getSavedJobs = async (req, res) => {
     const userId = req.user.id;
     const { page = 1, limit = 10 } = req.query;
 
-    // Try to import SavedJob model
-    let SavedJob;
-    try {
-      SavedJob = require("../models/SavedJob");
-    } catch (error) {
-      return res.status(200).json({
-        data: encryptData({
-          message: "No saved jobs found",
-          saved_jobs: [],
-          pagination: {
-            current_page: 1,
-            total_pages: 0,
-            total_saved_jobs: 0,
-            per_page: parseInt(limit),
-          },
-        }),
-      });
-    }
-
     // Setup pagination
     const skip = (page - 1) * limit;
 
@@ -806,7 +775,10 @@ exports.getSavedJobs = async (req, res) => {
     });
 
     // Check which saved jobs the user has applied to
-    const projectJobIds = savedJobs.map((savedJob) => savedJob.project_job._id);
+    const projectJobIds = savedJobs
+      .map((savedJob) => savedJob.project_job?._id)
+      .filter(Boolean);
+
     const appliedJobIds = await Job.find({
       service_provider: userId,
       project_job: { $in: projectJobIds },
