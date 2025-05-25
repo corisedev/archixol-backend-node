@@ -993,3 +993,591 @@ exports.getMyJobs = async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 };
+
+// @desc    Accept or reject a proposal
+// @route   POST /client/proposal_action
+// @access  Private (Client Only)
+exports.proposalAction = async (req, res) => {
+  try {
+    const { job_id, proposal_id, action, message = "" } = req.body;
+    const userId = req.user.id;
+
+    // Validate action
+    if (!["accept", "reject"].includes(action)) {
+      return res
+        .status(400)
+        .json({ error: "Invalid action. Must be 'accept' or 'reject'" });
+    }
+
+    // Get the project job and verify it belongs to this client
+    const projectJob = await ProjectJob.findOne({
+      _id: job_id,
+      client_id: userId,
+    });
+
+    if (!projectJob) {
+      return res.status(404).json({
+        error:
+          "Job not found or you don't have permission to perform this action",
+      });
+    }
+
+    // Check if job is still open
+    if (projectJob.status !== "open") {
+      return res.status(400).json({
+        error: "Cannot modify proposals for jobs that are not open",
+      });
+    }
+
+    // Find the specific proposal
+    const proposalIndex = projectJob.proposals.findIndex(
+      (p) => p._id.toString() === proposal_id
+    );
+
+    if (proposalIndex === -1) {
+      return res.status(404).json({ error: "Proposal not found" });
+    }
+
+    const proposal = projectJob.proposals[proposalIndex];
+
+    // Check if proposal is still pending
+    if (proposal.status !== "pending") {
+      return res.status(400).json({
+        error: "Can only modify pending proposals",
+      });
+    }
+
+    if (action === "accept") {
+      // Accept the proposal
+      proposal.status = "accepted";
+
+      // Update job status and assign service provider
+      projectJob.status = "in_progress";
+      projectJob.selected_provider = proposal.service_provider_id;
+      projectJob.started_at = new Date();
+
+      // Update budget to match accepted proposal if different
+      projectJob.budget = proposal.proposed_budget;
+
+      // Reject all other pending proposals
+      projectJob.proposals.forEach((p, index) => {
+        if (index !== proposalIndex && p.status === "pending") {
+          p.status = "rejected";
+        }
+      });
+
+      // Update service provider's service statistics
+      await Service.updateMany(
+        { user: proposal.service_provider_id },
+        {
+          $inc: {
+            total_job_requests: 1,
+            total_pending_jobs: 1,
+          },
+        }
+      );
+    } else {
+      // Reject the proposal
+      proposal.status = "rejected";
+    }
+
+    await projectJob.save();
+
+    // Get service provider details for notification
+    const serviceProvider = await User.findById(
+      proposal.service_provider_id
+    ).select("username email");
+
+    const responseData = {
+      message: `Proposal ${action}ed successfully`,
+      job: {
+        id: projectJob._id,
+        title: projectJob.title,
+        status: projectJob.status,
+        selected_provider: projectJob.selected_provider,
+        started_at: projectJob.started_at,
+      },
+      proposal: {
+        id: proposal._id,
+        status: proposal.status,
+        service_provider: {
+          id: proposal.service_provider_id,
+          username: serviceProvider?.username,
+        },
+      },
+      notification_message: message,
+    };
+
+    // Send real-time notification to service provider if socket service is available
+    if (req.socketService && serviceProvider) {
+      const notificationData = {
+        type: "proposal_" + action,
+        message: `Your proposal for "${projectJob.title}" has been ${action}ed`,
+        job_id: projectJob._id,
+        job_title: projectJob.title,
+        client_message: message,
+        timestamp: new Date(),
+      };
+
+      req.socketService.emitToUser(
+        proposal.service_provider_id.toString(),
+        "proposalStatusChanged",
+        notificationData
+      );
+    }
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error in proposalAction:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Get client projects by status (ongoing, completed, cancelled, rejected)
+// @route   GET /client/projects_by_status
+// @access  Private (Client Only)
+exports.getProjectsByStatus = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { status, page = 1, limit = 10 } = req.query;
+
+    // Build query based on status
+    let query = { client_id: userId };
+
+    if (status) {
+      switch (status.toLowerCase()) {
+        case "ongoing":
+          query.status = { $in: ["in_progress"] };
+          break;
+        case "completed":
+          query.status = "completed";
+          break;
+        case "cancelled":
+          query.status = { $in: ["cancelled", "closed"] };
+          break;
+        case "rejected":
+          // Projects where all proposals were rejected and job is still open or closed
+          query = {
+            ...query,
+            $or: [
+              { status: "open", "proposals.0": { $exists: true } },
+              { status: "closed" },
+            ],
+          };
+          break;
+        default:
+          return res.status(400).json({
+            error:
+              "Invalid status. Use: ongoing, completed, cancelled, rejected",
+          });
+      }
+    }
+
+    // Setup pagination
+    const skip = (page - 1) * limit;
+
+    // Get projects with pagination
+    const projects = await ProjectJob.find(query)
+      .populate({
+        path: "selected_provider",
+        select: "username email user_type",
+      })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .lean();
+
+    const totalProjects = await ProjectJob.countDocuments(query);
+
+    // Format projects with additional details
+    const formattedProjects = await Promise.all(
+      projects.map(async (project) => {
+        let progressPercentage = 0;
+        let timeRemaining = null;
+        let proposalsSummary = null;
+
+        // Calculate progress based on status
+        switch (project.status) {
+          case "open":
+            progressPercentage = 10;
+            break;
+          case "in_progress":
+            progressPercentage = 50;
+            // Calculate time remaining if timeline is specified
+            if (project.started_at && project.timeline) {
+              const timelineMatch = project.timeline.match(/(\d+)/);
+              if (timelineMatch) {
+                const timelineDays = parseInt(timelineMatch[0]);
+                const startDate = new Date(project.started_at);
+                const expectedEndDate = new Date(startDate);
+                expectedEndDate.setDate(startDate.getDate() + timelineDays);
+
+                const now = new Date();
+                const timeDiff = expectedEndDate - now;
+                timeRemaining = Math.ceil(timeDiff / (1000 * 60 * 60 * 24)); // days
+              }
+            }
+            break;
+          case "completed":
+            progressPercentage = 100;
+            break;
+          default:
+            progressPercentage = 0;
+        }
+
+        // For rejected status, provide proposals summary
+        if (status === "rejected" || project.proposals?.length > 0) {
+          const proposals = project.proposals || [];
+          proposalsSummary = {
+            total: proposals.length,
+            pending: proposals.filter((p) => p.status === "pending").length,
+            accepted: proposals.filter((p) => p.status === "accepted").length,
+            rejected: proposals.filter((p) => p.status === "rejected").length,
+          };
+        }
+
+        // Get service provider profile if selected
+        let serviceProviderProfile = null;
+        if (project.selected_provider) {
+          serviceProviderProfile = await UserProfile.findOne({
+            user_id: project.selected_provider._id,
+          })
+            .select("profile_img experience service_location")
+            .lean();
+        }
+
+        return {
+          project_id: project._id,
+          title: project.title,
+          category: project.category,
+          description: project.description,
+          budget: project.budget,
+          timeline: project.timeline,
+          status: project.status,
+          urgent: project.urgent,
+          city: project.city,
+          address: project.address,
+          created_at: project.createdAt,
+          started_at: project.started_at,
+          completed_at: project.completed_at,
+          progress_percentage: progressPercentage,
+          time_remaining_days: timeRemaining,
+          selected_provider: project.selected_provider
+            ? {
+                id: project.selected_provider._id,
+                username: project.selected_provider.username,
+                email: project.selected_provider.email,
+                user_type: project.selected_provider.user_type,
+                profile_img: serviceProviderProfile?.profile_img || "",
+                experience: serviceProviderProfile?.experience || 0,
+                service_location:
+                  serviceProviderProfile?.service_location || "",
+              }
+            : null,
+          proposals_summary: proposalsSummary,
+          required_skills: project.required_skills,
+          tags: project.tags,
+          docs: project.docs,
+        };
+      })
+    );
+
+    // Calculate summary statistics
+    const summaryStats = await ProjectJob.aggregate([
+      { $match: { client_id: userId } },
+      {
+        $group: {
+          _id: "$status",
+          count: { $sum: 1 },
+          totalBudget: { $sum: "$budget" },
+        },
+      },
+    ]);
+
+    const summary = {
+      total_projects: totalProjects,
+      ongoing: summaryStats.find((s) => s._id === "in_progress")?.count || 0,
+      completed: summaryStats.find((s) => s._id === "completed")?.count || 0,
+      cancelled: summaryStats
+        .filter((s) => ["cancelled", "closed"].includes(s._id))
+        .reduce((sum, s) => sum + s.count, 0),
+      open: summaryStats.find((s) => s._id === "open")?.count || 0,
+      total_investment: summaryStats.reduce(
+        (sum, s) => sum + (s.totalBudget || 0),
+        0
+      ),
+    };
+
+    const responseData = {
+      message: "Projects retrieved successfully",
+      projects: formattedProjects,
+      pagination: {
+        current_page: parseInt(page),
+        total_pages: Math.ceil(totalProjects / limit),
+        total_projects: totalProjects,
+        per_page: parseInt(limit),
+      },
+      summary: summary,
+      filter_applied: status || "all",
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error in getProjectsByStatus:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Cancel an ongoing project
+// @route   POST /client/cancel_project
+// @access  Private (Client Only)
+exports.cancelProject = async (req, res) => {
+  try {
+    const { project_id, reason = "", notify_provider = true } = req.body;
+    const userId = req.user.id;
+
+    // Get the project and verify it belongs to this client
+    const project = await ProjectJob.findOne({
+      _id: project_id,
+      client_id: userId,
+    }).populate({
+      path: "selected_provider",
+      select: "username email user_type",
+    });
+
+    if (!project) {
+      return res.status(404).json({
+        error: "Project not found or you don't have permission to cancel it",
+      });
+    }
+
+    // Check if project can be cancelled
+    if (!["open", "in_progress"].includes(project.status)) {
+      return res.status(400).json({
+        error: "Can only cancel open or in-progress projects",
+      });
+    }
+
+    // Update project status
+    const previousStatus = project.status;
+    project.status = "cancelled";
+    project.completed_at = new Date();
+
+    // Add cancellation note
+    if (!project.note) {
+      project.note = `Cancelled by client. Reason: ${reason}`;
+    } else {
+      project.note += `\n\nCancelled by client. Reason: ${reason}`;
+    }
+
+    await project.save();
+
+    // Update service provider statistics if project was in progress
+    if (previousStatus === "in_progress" && project.selected_provider) {
+      await Service.updateMany(
+        { user: project.selected_provider._id },
+        {
+          $inc: {
+            total_pending_jobs: -1,
+          },
+        }
+      );
+    }
+
+    const responseData = {
+      message: "Project cancelled successfully",
+      project: {
+        id: project._id,
+        title: project.title,
+        status: project.status,
+        cancelled_at: project.completed_at,
+        cancellation_reason: reason,
+        previous_status: previousStatus,
+      },
+    };
+
+    // Send notification to service provider if applicable
+    if (notify_provider && project.selected_provider && req.socketService) {
+      const notificationData = {
+        type: "project_cancelled",
+        message: `Project "${project.title}" has been cancelled by the client`,
+        project_id: project._id,
+        project_title: project.title,
+        cancellation_reason: reason,
+        cancelled_at: project.completed_at,
+        timestamp: new Date(),
+      };
+
+      req.socketService.emitToUser(
+        project.selected_provider._id.toString(),
+        "projectCancelled",
+        notificationData
+      );
+    }
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error in cancelProject:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Mark project as completed
+// @route   POST /client/complete_project
+// @access  Private (Client Only)
+exports.completeProject = async (req, res) => {
+  try {
+    const {
+      project_id,
+      feedback_rating,
+      feedback_comment = "",
+      final_payment_amount,
+      approve_provider_completion = true,
+    } = req.body;
+    const userId = req.user.id;
+
+    const project = await ProjectJob.findOne({
+      _id: project_id,
+      client_id: userId,
+    }).populate({
+      path: "selected_provider",
+      select: "username email user_type",
+    });
+
+    if (!project) {
+      return res.status(404).json({
+        error: "Project not found or you don't have permission to complete it",
+      });
+    }
+
+    // Allow completion from both "in_progress" and "pending_client_approval" statuses
+    if (!["in_progress", "pending_client_approval"].includes(project.status)) {
+      return res.status(400).json({
+        error:
+          "Can only complete in-progress projects or approve submitted work",
+      });
+    }
+
+    // Validate feedback rating if provided
+    if (feedback_rating && (feedback_rating < 1 || feedback_rating > 5)) {
+      return res.status(400).json({
+        error: "Feedback rating must be between 1 and 5",
+      });
+    }
+
+    const wasSubmittedByProvider = project.status === "pending_client_approval";
+    const previousStatus = project.status;
+
+    // Update project status to completed
+    project.status = "completed";
+    project.completed_at = new Date();
+    project.payment_status = final_payment_amount ? "paid" : "pending";
+
+    // Add completion feedback
+    const completionEntry = `\n\n[${new Date().toISOString()}] CLIENT COMPLETION:`;
+    let completionText = completionEntry;
+
+    if (wasSubmittedByProvider && approve_provider_completion) {
+      completionText += `\nApproved provider's submitted work.`;
+    }
+
+    if (feedback_rating) {
+      completionText += `\nRating: ${feedback_rating}/5`;
+    }
+
+    if (feedback_comment) {
+      completionText += `\nFeedback: ${feedback_comment}`;
+    }
+
+    project.note = (project.note || "") + completionText;
+
+    await project.save();
+
+    // NOW update service provider statistics (only when truly completed)
+    if (project.selected_provider) {
+      const updateStats = {
+        $inc: {
+          total_jobs_completed: 1,
+          total_pending_jobs: -1,
+        },
+      };
+
+      if (final_payment_amount) {
+        updateStats.$inc.total_earnings = final_payment_amount;
+      }
+
+      // Update average rating if feedback is provided
+      if (feedback_rating) {
+        const services = await Service.find({
+          user: project.selected_provider._id,
+        });
+        if (services.length > 0) {
+          const totalRatings = services.reduce(
+            (sum, service) => sum + (service.rating || 0),
+            0
+          );
+          const newAverageRating =
+            (totalRatings + feedback_rating) / (services.length + 1);
+          updateStats.$set = { rating: Math.round(newAverageRating * 10) / 10 };
+        }
+      }
+
+      await Service.updateMany(
+        { user: project.selected_provider._id },
+        updateStats
+      );
+    }
+
+    const responseData = {
+      message: wasSubmittedByProvider
+        ? "Provider's work approved and project completed"
+        : "Project completed successfully",
+      project: {
+        id: project._id,
+        title: project.title,
+        status: project.status,
+        completed_at: project.completed_at,
+        provider_completed_at: project.provider_completed_at,
+        payment_status: project.payment_status,
+        feedback_rating: feedback_rating,
+        feedback_comment: feedback_comment,
+        final_payment_amount: final_payment_amount,
+        was_submitted_by_provider: wasSubmittedByProvider,
+        previous_status: previousStatus,
+      },
+    };
+
+    // Notify service provider
+    if (project.selected_provider && req.socketService) {
+      const notificationData = {
+        type: "project_completed",
+        message: wasSubmittedByProvider
+          ? `Your submitted work for "${project.title}" has been approved!`
+          : `Project "${project.title}" has been marked as completed by the client`,
+        project_id: project._id,
+        project_title: project.title,
+        completed_at: project.completed_at,
+        feedback_rating: feedback_rating,
+        feedback_comment: feedback_comment,
+        final_payment_amount: final_payment_amount,
+        was_submitted_work_approved: wasSubmittedByProvider,
+        timestamp: new Date(),
+      };
+
+      req.socketService.emitToUser(
+        project.selected_provider._id.toString(),
+        "projectCompleted",
+        notificationData
+      );
+    }
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error in completeProject:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};

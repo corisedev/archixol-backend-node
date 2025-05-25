@@ -1,5 +1,7 @@
 const Service = require("../models/Service");
 const Job = require("../models/Job");
+const User = require("../models/User");
+const ProjectJob = require("../models/ProjectJob");
 const { encryptData } = require("../utils/encryptResponse");
 
 // Helper function to get monthly data for graph
@@ -552,6 +554,576 @@ exports.deleteService = async (req, res) => {
     res.status(200).json({ data: encryptedData });
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Get ongoing projects for service provider
+// @route   GET /service/ongoing_projects
+// @access  Private (Service Provider Only)
+exports.getOngoingProjects = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { page = 1, limit = 10 } = req.query;
+
+    // Setup pagination
+    const skip = (page - 1) * limit;
+
+    // Get ongoing projects where this service provider is selected
+    const projects = await ProjectJob.find({
+      selected_provider: userId,
+      status: "in_progress",
+    })
+      .populate({
+        path: "client_id",
+        select: "username email user_type",
+      })
+      .sort({ started_at: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .lean();
+
+    const totalProjects = await ProjectJob.countDocuments({
+      selected_provider: userId,
+      status: "in_progress",
+    });
+
+    // Format projects with additional details
+    const formattedProjects = await Promise.all(
+      projects.map(async (project) => {
+        // Calculate time remaining if timeline is specified
+        let timeRemaining = null;
+        let isOverdue = false;
+
+        if (project.started_at && project.timeline) {
+          const timelineMatch = project.timeline.match(/(\d+)/);
+          if (timelineMatch) {
+            const timelineDays = parseInt(timelineMatch[0]);
+            const startDate = new Date(project.started_at);
+            const expectedEndDate = new Date(startDate);
+            expectedEndDate.setDate(startDate.getDate() + timelineDays);
+
+            const now = new Date();
+            const timeDiff = expectedEndDate - now;
+            timeRemaining = Math.ceil(timeDiff / (1000 * 60 * 60 * 24)); // days
+            isOverdue = timeRemaining < 0;
+          }
+        }
+
+        // Get client profile
+        let clientProfile = null;
+        if (project.client_id) {
+          clientProfile = await UserProfile.findOne({
+            user_id: project.client_id._id,
+          })
+            .select("profile_img fullname phone_number address")
+            .lean();
+        }
+
+        // Calculate project duration so far
+        const startDate = new Date(project.started_at);
+        const now = new Date();
+        const durationDays = Math.floor(
+          (now - startDate) / (1000 * 60 * 60 * 24)
+        );
+
+        return {
+          project_id: project._id,
+          title: project.title,
+          category: project.category,
+          description: project.description,
+          budget: project.budget,
+          timeline: project.timeline,
+          status: project.status,
+          urgent: project.urgent,
+          city: project.city,
+          address: project.address,
+          started_at: project.started_at,
+          duration_days: durationDays,
+          time_remaining_days: timeRemaining,
+          is_overdue: isOverdue,
+          client: project.client_id
+            ? {
+                id: project.client_id._id,
+                username: project.client_id.username,
+                email: project.client_id.email,
+                fullname: clientProfile?.fullname || "",
+                profile_img: clientProfile?.profile_img || "",
+                phone_number: clientProfile?.phone_number || "",
+                address: clientProfile?.address || "",
+              }
+            : null,
+          required_skills: project.required_skills,
+          tags: project.tags,
+          docs: project.docs,
+          note: project.note,
+        };
+      })
+    );
+
+    // Get summary statistics for service provider
+    const stats = await ProjectJob.aggregate([
+      { $match: { selected_provider: userId } },
+      {
+        $group: {
+          _id: "$status",
+          count: { $sum: 1 },
+          totalEarnings: { $sum: "$budget" },
+        },
+      },
+    ]);
+
+    const summary = {
+      ongoing_projects: stats.find((s) => s._id === "in_progress")?.count || 0,
+      completed_projects: stats.find((s) => s._id === "completed")?.count || 0,
+      total_earnings:
+        stats.find((s) => s._id === "completed")?.totalEarnings || 0,
+      total_projects: stats.reduce((sum, s) => sum + s.count, 0),
+    };
+
+    const responseData = {
+      message: "Ongoing projects retrieved successfully",
+      projects: formattedProjects,
+      pagination: {
+        current_page: parseInt(page),
+        total_pages: Math.ceil(totalProjects / limit),
+        total_projects: totalProjects,
+        per_page: parseInt(limit),
+      },
+      summary: summary,
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error in getOngoingProjects:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Get all projects by status for service provider
+// @route   GET /service/projects_by_status
+// @access  Private (Service Provider Only)
+exports.getServiceProviderProjectsByStatus = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { status, page = 1, limit = 10 } = req.query;
+
+    // Build query based on status
+    let query = { selected_provider: userId };
+
+    if (status) {
+      switch (status.toLowerCase()) {
+        case "ongoing":
+          query.status = "in_progress";
+          break;
+        case "completed":
+          query.status = "completed";
+          break;
+        case "cancelled":
+          query.status = { $in: ["cancelled", "closed"] };
+          break;
+        default:
+          return res.status(400).json({
+            error: "Invalid status. Use: ongoing, completed, cancelled",
+          });
+      }
+    }
+
+    // Setup pagination
+    const skip = (page - 1) * limit;
+
+    // Get projects with pagination
+    const projects = await ProjectJob.find(query)
+      .populate({
+        path: "client_id",
+        select: "username email user_type",
+      })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .lean();
+
+    const totalProjects = await ProjectJob.countDocuments(query);
+
+    // Format projects
+    const formattedProjects = await Promise.all(
+      projects.map(async (project) => {
+        // Get client profile
+        let clientProfile = null;
+        if (project.client_id) {
+          clientProfile = await UserProfile.findOne({
+            user_id: project.client_id._id,
+          })
+            .select("profile_img fullname phone_number")
+            .lean();
+        }
+
+        // Calculate project metrics
+        let duration = null;
+        let earnings = 0;
+
+        if (project.completed_at && project.started_at) {
+          const startDate = new Date(project.started_at);
+          const endDate = new Date(project.completed_at);
+          duration = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
+        }
+
+        if (project.status === "completed") {
+          earnings = project.budget;
+        }
+
+        return {
+          project_id: project._id,
+          title: project.title,
+          category: project.category,
+          description: project.description,
+          budget: project.budget,
+          timeline: project.timeline,
+          status: project.status,
+          urgent: project.urgent,
+          city: project.city,
+          started_at: project.started_at,
+          completed_at: project.completed_at,
+          duration_days: duration,
+          earnings: earnings,
+          client: project.client_id
+            ? {
+                id: project.client_id._id,
+                username: project.client_id.username,
+                email: project.client_id.email,
+                fullname: clientProfile?.fullname || "",
+                profile_img: clientProfile?.profile_img || "",
+              }
+            : null,
+          payment_status: project.payment_status,
+        };
+      })
+    );
+
+    const responseData = {
+      message: "Projects retrieved successfully",
+      projects: formattedProjects,
+      pagination: {
+        current_page: parseInt(page),
+        total_pages: Math.ceil(totalProjects / limit),
+        total_projects: totalProjects,
+        per_page: parseInt(limit),
+      },
+      filter_applied: status || "all",
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error in getServiceProviderProjectsByStatus:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Mark project as completed from service provider side
+// @route   POST /service/complete_project
+// @access  Private (Service Provider Only)
+exports.completeProjectFromProvider = async (req, res) => {
+  try {
+    const { project_id, completion_notes = "", deliverables = [] } = req.body;
+    const userId = req.user.id;
+
+    const project = await ProjectJob.findOne({
+      _id: project_id,
+      selected_provider: userId,
+    }).populate({
+      path: "client_id",
+      select: "username email user_type",
+    });
+
+    if (!project) {
+      return res.status(404).json({
+        error: "Project not found or you don't have permission to complete it",
+      });
+    }
+
+    if (project.status !== "in_progress") {
+      return res.status(400).json({
+        error: "Can only complete in-progress projects",
+      });
+    }
+
+    // Instead of marking as completed, mark as "pending_client_approval"
+    project.status = "pending_client_approval";
+    project.provider_completed_at = new Date(); // New field
+
+    // Add completion notes
+    if (completion_notes) {
+      const completionEntry = `\n\n[${new Date().toISOString()}] SERVICE PROVIDER COMPLETION:\nNotes: ${completion_notes}`;
+      project.note = (project.note || "") + completionEntry;
+    }
+
+    // Add deliverables
+    if (deliverables.length > 0) {
+      project.docs = [...(project.docs || []), ...deliverables];
+    }
+
+    await project.save();
+
+    // DON'T update statistics yet - wait for client confirmation
+
+    const responseData = {
+      message: "Project submitted for client approval",
+      project: {
+        id: project._id,
+        title: project.title,
+        status: project.status, // "pending_client_approval"
+        provider_completed_at: project.provider_completed_at,
+        completion_notes: completion_notes,
+        deliverables: deliverables,
+        budget: project.budget,
+        next_step: "Waiting for client to review and approve completion",
+      },
+    };
+
+    // Notify client that work is ready for review
+    if (project.client_id && req.socketService) {
+      const notificationData = {
+        type: "work_submitted_for_approval",
+        message: `"${project.title}" has been submitted for your review and approval`,
+        project_id: project._id,
+        project_title: project.title,
+        provider_completed_at: project.provider_completed_at,
+        completion_notes: completion_notes,
+        deliverables: deliverables,
+        provider_username: req.user.username,
+        action_required:
+          "Please review the work and mark as completed if satisfied",
+        timestamp: new Date(),
+      };
+
+      req.socketService.emitToUser(
+        project.client_id._id.toString(),
+        "workSubmittedForApproval",
+        notificationData
+      );
+    }
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error in completeProjectFromProvider:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Update project progress/status
+// @route   POST /service/update_project_progress
+// @access  Private (Service Provider Only)
+exports.updateProjectProgress = async (req, res) => {
+  try {
+    const {
+      project_id,
+      progress_notes,
+      estimated_completion_date,
+      milestone_completed,
+    } = req.body;
+    const userId = req.user.id;
+
+    // Get the project and verify it's assigned to this service provider
+    const project = await ProjectJob.findOne({
+      _id: project_id,
+      selected_provider: userId,
+    }).populate({
+      path: "client_id",
+      select: "username email user_type",
+    });
+
+    if (!project) {
+      return res.status(404).json({
+        error: "Project not found or you don't have permission to update it",
+      });
+    }
+
+    // Check if project is in progress
+    if (project.status !== "in_progress") {
+      return res.status(400).json({
+        error: "Can only update progress for in-progress projects",
+      });
+    }
+
+    // Add progress notes
+    if (progress_notes) {
+      const timestamp = new Date().toISOString();
+      const progressUpdate = `\n\n[${timestamp}] Progress Update: ${progress_notes}`;
+
+      if (!project.note) {
+        project.note = `Progress Updates:${progressUpdate}`;
+      } else {
+        project.note += progressUpdate;
+      }
+    }
+
+    await project.save();
+
+    const responseData = {
+      message: "Project progress updated successfully",
+      project: {
+        id: project._id,
+        title: project.title,
+        status: project.status,
+        progress_notes: progress_notes,
+        estimated_completion_date: estimated_completion_date,
+        milestone_completed: milestone_completed,
+        updated_at: new Date(),
+      },
+    };
+
+    // Send notification to client about progress update
+    if (project.client_id && req.socketService) {
+      const notificationData = {
+        type: "project_progress_update",
+        message: `Progress update for project "${project.title}"`,
+        project_id: project._id,
+        project_title: project.title,
+        progress_notes: progress_notes,
+        provider_username: req.user.username,
+        timestamp: new Date(),
+      };
+
+      req.socketService.emitToUser(
+        project.client_id._id.toString(),
+        "projectProgressUpdate",
+        notificationData
+      );
+    }
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error in updateProjectProgress:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Get project details for service provider
+// @route   POST /service/get_project_details
+// @access  Private (Service Provider Only)
+exports.getProjectDetails = async (req, res) => {
+  try {
+    const { project_id } = req.body;
+    const userId = req.user.id;
+
+    if (!project_id) {
+      return res.status(400).json({ error: "Project ID is required" });
+    }
+
+    // Get the project and verify it's assigned to this service provider
+    const project = await ProjectJob.findOne({
+      _id: project_id,
+      selected_provider: userId,
+    })
+      .populate({
+        path: "client_id",
+        select: "username email user_type createdAt",
+      })
+      .lean();
+
+    if (!project) {
+      return res.status(404).json({
+        error: "Project not found or you don't have permission to view it",
+      });
+    }
+
+    // Get client profile details
+    let clientProfile = null;
+    if (project.client_id) {
+      clientProfile = await UserProfile.findOne({
+        user_id: project.client_id._id,
+      }).lean();
+    }
+
+    // Calculate project metrics
+    let timeRemaining = null;
+    let durationSoFar = null;
+    let isOverdue = false;
+
+    if (project.started_at) {
+      const startDate = new Date(project.started_at);
+      const now = new Date();
+      durationSoFar = Math.floor((now - startDate) / (1000 * 60 * 60 * 24));
+
+      if (project.timeline) {
+        const timelineMatch = project.timeline.match(/(\d+)/);
+        if (timelineMatch) {
+          const timelineDays = parseInt(timelineMatch[0]);
+          const expectedEndDate = new Date(startDate);
+          expectedEndDate.setDate(startDate.getDate() + timelineDays);
+
+          const timeDiff = expectedEndDate - now;
+          timeRemaining = Math.ceil(timeDiff / (1000 * 60 * 60 * 24));
+          isOverdue = timeRemaining < 0;
+        }
+      }
+    }
+
+    // Calculate completion metrics if completed
+    let actualDuration = null;
+    if (project.completed_at && project.started_at) {
+      const startDate = new Date(project.started_at);
+      const endDate = new Date(project.completed_at);
+      actualDuration = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
+    }
+
+    const responseData = {
+      message: "Project details retrieved successfully",
+      project: {
+        id: project._id,
+        title: project.title,
+        category: project.category,
+        description: project.description,
+        budget: project.budget,
+        timeline: project.timeline,
+        status: project.status,
+        urgent: project.urgent,
+        city: project.city,
+        address: project.address,
+        required_skills: project.required_skills,
+        tags: project.tags,
+        docs: project.docs,
+        note: project.note,
+        created_at: project.createdAt,
+        started_at: project.started_at,
+        completed_at: project.completed_at,
+        payment_status: project.payment_status,
+
+        // Time metrics
+        duration_so_far_days: durationSoFar,
+        time_remaining_days: timeRemaining,
+        is_overdue: isOverdue,
+        actual_duration_days: actualDuration,
+
+        // Client information
+        client: project.client_id
+          ? {
+              id: project.client_id._id,
+              username: project.client_id.username,
+              email: project.client_id.email,
+              user_type: project.client_id.user_type,
+              member_since: project.client_id.createdAt,
+              fullname: clientProfile?.fullname || "",
+              profile_img: clientProfile?.profile_img || "",
+              phone_number: clientProfile?.phone_number || "",
+              company_name: clientProfile?.company_name || "",
+              business_type: clientProfile?.business_type || "",
+              address: clientProfile?.address || "",
+              city: clientProfile?.city || "",
+              about: clientProfile?.about || "",
+            }
+          : null,
+      },
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error in getProjectDetails:", err);
     res.status(500).json({ error: "Server error" });
   }
 };

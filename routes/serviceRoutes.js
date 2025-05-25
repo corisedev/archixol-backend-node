@@ -7,6 +7,11 @@ const {
   getService,
   updateService,
   deleteService,
+  getOngoingProjects,
+  getServiceProviderProjectsByStatus,
+  completeProjectFromProvider,
+  updateProjectProgress,
+  getProjectDetails,
 } = require("../controllers/serviceController");
 
 // Import job-related controllers
@@ -41,6 +46,15 @@ const {
   validateGetSavedJobs,
   validate: validateJob,
 } = require("../utils/serviceProviderJobValidation");
+
+const {
+  validateServiceProviderProjectsByStatus,
+  validateGetOngoingProjects,
+  validateCompleteProjectFromProvider,
+  validateUpdateProjectProgress,
+  validateGetProjectDetails,
+  validate: validateProject,
+} = require("../utils/projectManagementValidation");
 
 const { protect, authorizeServiceProvider } = require("../middleware/auth");
 const { decryptRequest } = require("../middleware/encryption");
@@ -197,6 +211,69 @@ router.get(
   validateGetSavedJobs,
   validateJob,
   getSavedJobs
+);
+
+// @desc    Get ongoing projects for service provider
+// @route   GET /service/ongoing_projects
+// @access  Private (Service Provider Only)
+router.get(
+  "/ongoing_projects",
+  protect,
+  authorizeServiceProvider,
+  validateGetOngoingProjects,
+  validateProject,
+  getOngoingProjects
+);
+
+// @desc    Get projects by status for service provider
+// @route   GET /service/projects_by_status
+// @access  Private (Service Provider Only)
+router.get(
+  "/projects_by_status",
+  protect,
+  authorizeServiceProvider,
+  validateServiceProviderProjectsByStatus,
+  validateProject,
+  getServiceProviderProjectsByStatus
+);
+
+// @desc    Get detailed project information
+// @route   POST /service/get_project_details
+// @access  Private (Service Provider Only)
+router.post(
+  "/get_project_details",
+  protect,
+  authorizeServiceProvider,
+  decryptRequest,
+  validateGetProjectDetails,
+  validateProject,
+  getProjectDetails
+);
+
+// @desc    Update project progress/status
+// @route   POST /service/update_project_progress
+// @access  Private (Service Provider Only)
+router.post(
+  "/update_project_progress",
+  protect,
+  authorizeServiceProvider,
+  decryptRequest,
+  validateUpdateProjectProgress,
+  validateProject,
+  updateProjectProgress
+);
+
+// @desc    Mark project as completed from service provider side
+// @route   POST /service/complete_project
+// @access  Private (Service Provider Only)
+router.post(
+  "/complete_project",
+  protect,
+  authorizeServiceProvider,
+  decryptRequest,
+  validateCompleteProjectFromProvider,
+  validateProject,
+  completeProjectFromProvider
 );
 
 module.exports = router;

@@ -15,6 +15,10 @@ const {
   getMyProjects,
   getJobProposals,
   getMyJobs,
+  proposalAction,
+  getProjectsByStatus,
+  cancelProject,
+  completeProject,
 } = require("../controllers/clientController");
 
 // Import profile controllers
@@ -50,6 +54,15 @@ const {
   validateProposals,
   validateGetMyJobs,
 } = require("../utils/clientValidation");
+
+const {
+  validateProposalAction,
+  validateGetProjectsByStatus,
+  validateCancelProject,
+  validateCompleteProject,
+  validate: validateProject,
+} = require("../utils/projectManagementValidation");
+
 const {
   validateClientProfileUpdate,
   validateChangePassword,
@@ -148,5 +161,48 @@ router.get("/my_jobs", validateGetMyJobs, validate, getMyJobs);
 
 // My Projects route
 router.get("/my-projects", getMyProjects);
+
+// @desc    Get projects by status (ongoing, completed, cancelled, rejected)
+// @route   GET /client/projects_by_status
+// @access  Private (Client Only)
+router.get(
+  "/projects_by_status",
+  validateGetProjectsByStatus,
+  validateProject,
+  getProjectsByStatus
+);
+
+// @desc    Accept or reject a proposal
+// @route   POST /client/proposal_action
+// @access  Private (Client Only)
+router.post(
+  "/proposal_action",
+  decryptRequest,
+  validateProposalAction,
+  validateProject,
+  proposalAction
+);
+
+// @desc    Cancel an ongoing project
+// @route   POST /client/cancel_project
+// @access  Private (Client Only)
+router.post(
+  "/cancel_project",
+  decryptRequest,
+  validateCancelProject,
+  validateProject,
+  cancelProject
+);
+
+// @desc    Mark project as completed
+// @route   POST /client/complete_project
+// @access  Private (Client Only)
+router.post(
+  "/complete_project",
+  decryptRequest,
+  validateCompleteProject,
+  validateProject,
+  completeProject
+);
 
 module.exports = router;
