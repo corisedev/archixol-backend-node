@@ -1,6 +1,7 @@
 const Service = require("../models/Service");
 const Job = require("../models/Job");
 const User = require("../models/User");
+const UserProfile = require("../models/UserProfile");
 const ProjectJob = require("../models/ProjectJob");
 const { encryptData } = require("../utils/encryptResponse");
 
@@ -826,7 +827,7 @@ exports.getServiceProviderProjectsByStatus = async (req, res) => {
 // @access  Private (Service Provider Only)
 exports.completeProjectFromProvider = async (req, res) => {
   try {
-    const { project_id, completion_notes = "", deliverables = [] } = req.body;
+    const { project_id, completion_notes = "" } = req.body;
     const userId = req.user.id;
 
     const project = await ProjectJob.findOne({
@@ -859,11 +860,6 @@ exports.completeProjectFromProvider = async (req, res) => {
       project.note = (project.note || "") + completionEntry;
     }
 
-    // Add deliverables
-    if (deliverables.length > 0) {
-      project.docs = [...(project.docs || []), ...deliverables];
-    }
-
     await project.save();
 
     // DON'T update statistics yet - wait for client confirmation
@@ -876,7 +872,6 @@ exports.completeProjectFromProvider = async (req, res) => {
         status: project.status, // "pending_client_approval"
         provider_completed_at: project.provider_completed_at,
         completion_notes: completion_notes,
-        deliverables: deliverables,
         budget: project.budget,
         next_step: "Waiting for client to review and approve completion",
       },
@@ -891,7 +886,6 @@ exports.completeProjectFromProvider = async (req, res) => {
         project_title: project.title,
         provider_completed_at: project.provider_completed_at,
         completion_notes: completion_notes,
-        deliverables: deliverables,
         provider_username: req.user.username,
         action_required:
           "Please review the work and mark as completed if satisfied",

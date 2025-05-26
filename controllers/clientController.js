@@ -123,7 +123,7 @@ exports.getJobsAndProjects = async (req, res) => {
 
     const inProgress = await ProjectJob.countDocuments({
       client_id: userId,
-      status: "in_progress",
+      status: { $in: ["in_progress", "pending_client_approval"] },
     });
 
     const openJobs = await ProjectJob.countDocuments({
@@ -571,7 +571,9 @@ exports.getMyProjects = async (req, res) => {
     const totalProjects = projectJobs.length;
 
     const activeProjects = projectJobs.filter((project) =>
-      ["open", "in_progress"].includes(project.status)
+      ["open", "in_progress", "pending_client_approval"].includes(
+        project.status
+      )
     ).length;
 
     const completedProjects = projectJobs.filter(
@@ -1148,7 +1150,7 @@ exports.getProjectsByStatus = async (req, res) => {
     if (status) {
       switch (status.toLowerCase()) {
         case "ongoing":
-          query.status = { $in: ["in_progress"] };
+          query.status = { $in: ["in_progress", "pending_client_approval"] };
           break;
         case "completed":
           query.status = "completed";
@@ -1297,7 +1299,10 @@ exports.getProjectsByStatus = async (req, res) => {
 
     const summary = {
       total_projects: totalProjects,
-      ongoing: summaryStats.find((s) => s._id === "in_progress")?.count || 0,
+      ongoing:
+        summaryStats.find(
+          (s) => s._id === "in_progress" || s._id === "pending_client_approval"
+        )?.count || 0,
       completed: summaryStats.find((s) => s._id === "completed")?.count || 0,
       cancelled: summaryStats
         .filter((s) => ["cancelled", "closed"].includes(s._id))
@@ -1354,7 +1359,11 @@ exports.cancelProject = async (req, res) => {
     }
 
     // Check if project can be cancelled
-    if (!["open", "in_progress"].includes(project.status)) {
+    if (
+      !["open", "in_progress", "pending_client_approval"].includes(
+        project.status
+      )
+    ) {
       return res.status(400).json({
         error: "Can only cancel open or in-progress projects",
       });

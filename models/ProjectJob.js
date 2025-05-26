@@ -38,46 +38,46 @@ const ProjectJobSchema = new mongoose.Schema({
   },
   title: {
     type: String,
-    required: [true, "Job title is required"],
+    required: false,
     trim: true,
     maxlength: [200, "Title cannot be more than 200 characters"],
   },
   type: {
     type: String,
-    required: [true, "Job type is required"],
+    required: false,
     default: "project",
   },
   // ADD THIS NEW FIELD FOR JOB CATEGORY
   category: {
     type: String,
-    required: [true, "Job category is required"],
+    required: false,
     trim: true,
     lowercase: true, // Ensure consistent casing
     maxlength: [100, "Category cannot be more than 100 characters"],
   },
   description: {
     type: String,
-    required: [true, "Job description is required"],
+    required: false,
     trim: true,
     maxlength: [5000, "Description cannot be more than 5000 characters"],
   },
   budget: {
     type: Number,
-    required: [true, "Budget is required"],
+    required: false,
     min: [0, "Budget must be positive"],
   },
   starting_date: {
     type: Date,
-    required: [true, "Starting Date is required"],
+    required: false,
   },
   timeline: {
     type: String,
-    required: [true, "Timeline is required"],
+    required: false,
     trim: true,
   },
   city: {
     type: String,
-    required: [true, "City is required"],
+    required: false,
     trim: true,
   },
   note: {
@@ -86,7 +86,7 @@ const ProjectJobSchema = new mongoose.Schema({
   },
   address: {
     type: String,
-    required: [true, "Address is required"],
+    required: false,
     trim: true,
   },
   urgent: {
@@ -107,7 +107,14 @@ const ProjectJobSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ["open", "in_progress", "completed", "cancelled", "closed"],
+    enum: [
+      "open",
+      "in_progress",
+      "completed",
+      "cancelled",
+      "closed",
+      "pending_client_approval",
+    ],
     default: "open",
   },
   proposals: [ProposalSchema],
