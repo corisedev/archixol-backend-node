@@ -553,16 +553,11 @@ exports.getMyProjects = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // Get all project jobs for this client
+    // Get all project jobs for this client with proper population
     const projectJobs = await ProjectJob.find({ client_id: userId })
       .populate({
         path: "selected_provider",
-        select: "username",
-        populate: {
-          path: "user_id",
-          model: "UserProfile",
-          select: "profile_img",
-        },
+        select: "username user_type email",
       })
       .sort({ createdAt: -1 })
       .lean();
@@ -582,7 +577,13 @@ exports.getMyProjects = async (req, res) => {
 
     // Calculate total investments (sum of all project budgets)
     const totalInvestments = projectJobs.reduce((sum, project) => {
-      return sum + (project.budget || 0);
+      if (
+        project.status === "pending_client_approval" ||
+        project.status === "in_progress"
+      ) {
+        return sum + (project.budget || 0);
+      }
+      return sum; // Important: Return the sum even if the condition is false!
     }, 0);
 
     // Create stats array
@@ -606,6 +607,22 @@ exports.getMyProjects = async (req, res) => {
       },
     ];
 
+    // Get UserProfile data separately if needed for profile images
+    let userProfiles = {};
+    if (projectJobs.some((p) => p.selected_provider)) {
+      const providerIds = projectJobs
+        .filter((p) => p.selected_provider)
+        .map((p) => p.selected_provider._id);
+
+      const profiles = await UserProfile.find({
+        user_id: { $in: providerIds },
+      }).lean();
+
+      profiles.forEach((profile) => {
+        userProfiles[profile.user_id.toString()] = profile;
+      });
+    }
+
     // Format projects for response
     const projects = projectJobs.map((project) => {
       // Calculate progress value based on status
@@ -616,6 +633,9 @@ exports.getMyProjects = async (req, res) => {
           break;
         case "in_progress":
           progressValue = 50;
+          break;
+        case "pending_client_approval":
+          progressValue = 90;
           break;
         case "completed":
           progressValue = 100;
@@ -648,8 +668,12 @@ exports.getMyProjects = async (req, res) => {
       }
 
       // If no image found in docs, try to get from selected provider profile
-      if (!image && project.selected_provider?.user_id?.profile_img) {
-        image = project.selected_provider.user_id.profile_img;
+      if (!image && project.selected_provider) {
+        const userProfile =
+          userProfiles[project.selected_provider._id.toString()];
+        if (userProfile?.profile_img) {
+          image = userProfile.profile_img;
+        }
       }
 
       // If still no image, use a placeholder or leave empty
@@ -666,6 +690,14 @@ exports.getMyProjects = async (req, res) => {
         date: project.createdAt,
         progressValue: progressValue,
         status: project.status,
+        selected_provider: project.selected_provider
+          ? {
+              id: project.selected_provider._id,
+              username: project.selected_provider.username,
+              user_type: project.selected_provider.user_type,
+              email: project.selected_provider.email,
+            }
+          : null,
       };
     });
 
@@ -682,7 +714,6 @@ exports.getMyProjects = async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 };
-
 // @desc    Get all proposals for a specific job posted by client
 // @route   POST /client/get_job_proposals
 // @access  Private (Client Only)

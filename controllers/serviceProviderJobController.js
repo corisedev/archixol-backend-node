@@ -493,17 +493,40 @@ exports.getMyApplications = async (req, res) => {
       query.status = status;
     }
 
-    // Get applications with pagination
+    // Get applications with pagination (without populating project_job since it doesn't exist in schema)
     const skip = (page - 1) * limit;
     const applications = await Job.find(query)
       .populate("client", "username email user_type")
       .populate("service", "service_title service_category")
-      .populate("project_job", "title description budget timeline city status")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
 
     const totalApplications = await Job.countDocuments(query);
+
+    // Get project job details separately if needed
+    const applicationIds = applications.map((app) => app._id);
+
+    // Find corresponding project jobs by looking at proposals
+    const projectJobs = await ProjectJob.find({
+      "proposals.service_provider_id": userId,
+    })
+      .select("title description budget timeline city status proposals")
+      .lean();
+
+    // Create a map of project jobs by finding matching proposals
+    const projectJobMap = {};
+    projectJobs.forEach((pj) => {
+      const userProposal = pj.proposals.find(
+        (p) => p.service_provider_id.toString() === userId
+      );
+      if (userProposal) {
+        projectJobMap[pj._id.toString()] = {
+          ...pj,
+          user_proposal: userProposal,
+        };
+      }
+    });
 
     // Format applications
     const formattedApplications = applications.map((app) => {
@@ -511,12 +534,62 @@ exports.getMyApplications = async (req, res) => {
       appObj.id = appObj._id;
       delete appObj._id;
 
+      // Try to find matching project job by looking through our map
+      // This is a best-effort approach since there's no direct relationship
+      const matchingProjectJob = Object.values(projectJobMap).find((pj) => {
+        // You might need to adjust this matching logic based on your business rules
+        // For now, we'll try to match by budget and timeline if available
+        return (
+          pj.budget === app.price ||
+          pj.user_proposal?.proposed_budget === app.price
+        );
+      });
+
+      if (matchingProjectJob) {
+        appObj.project_job = {
+          id: matchingProjectJob._id,
+          title: matchingProjectJob.title,
+          description: matchingProjectJob.description,
+          budget: matchingProjectJob.budget,
+          timeline: matchingProjectJob.timeline,
+          city: matchingProjectJob.city,
+          status: matchingProjectJob.status,
+          proposal_status:
+            matchingProjectJob.user_proposal?.status || "pending",
+        };
+      } else {
+        // If no matching project job found, create a minimal object
+        appObj.project_job = {
+          title: "Job Details Not Available",
+          description: app.requirements || "No description available",
+          budget: app.price,
+          timeline: "Not specified",
+          city: "Not specified",
+          status: "unknown",
+        };
+      }
+
       return appObj;
     });
+
+    // Calculate statistics
+    const stats = {
+      total_applications: totalApplications,
+      pending: applications.filter((app) => app.status === "requested").length,
+      accepted: applications.filter((app) => app.status === "accepted").length,
+      in_progress: applications.filter((app) => app.status === "in_progress")
+        .length,
+      completed: applications.filter((app) => app.status === "completed")
+        .length,
+      rejected: applications.filter((app) => app.status === "rejected").length,
+      cancelled: applications.filter((app) => app.status === "cancelled")
+        .length,
+    };
 
     const responseData = {
       message: "Applications retrieved successfully",
       applications: formattedApplications,
+      statistics: stats,
       pagination: {
         current_page: parseInt(page),
         total_pages: Math.ceil(totalApplications / limit),

@@ -16,6 +16,12 @@ const JobSchema = new mongoose.Schema({
     ref: "User",
     required: true,
   },
+  // ADD THIS FIELD
+  project_job: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "ProjectJob",
+    required: false, // Make it optional for backward compatibility
+  },
   status: {
     type: String,
     enum: [
