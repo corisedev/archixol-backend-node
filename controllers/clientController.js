@@ -132,7 +132,7 @@ exports.getJobsAndProjects = async (req, res) => {
     });
 
     // Get jobs list with proposal count
-    const jobs = await ProjectJob.find({ client_id: userId })
+    const jobs = await ProjectJob.find({ client_id: userId, status: "open" })
       .sort({ createdAt: -1 })
       .lean();
 
@@ -1099,6 +1099,35 @@ exports.proposalAction = async (req, res) => {
         }
       });
 
+      // IMPORTANT: Update the corresponding Job record status
+      await Job.findOneAndUpdate(
+        {
+          service_provider: proposal.service_provider_id,
+          project_job: job_id,
+        },
+        {
+          status: "accepted", // Update status to accepted
+          delivery_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // Set delivery date (30 days from now, adjust as needed)
+        }
+      );
+
+      // Update other Job records for rejected proposals
+      const rejectedProposals = projectJob.proposals.filter(
+        (p, index) => index !== proposalIndex && p.status === "rejected"
+      );
+
+      for (const rejectedProposal of rejectedProposals) {
+        await Job.findOneAndUpdate(
+          {
+            service_provider: rejectedProposal.service_provider_id,
+            project_job: job_id,
+          },
+          {
+            status: "rejected",
+          }
+        );
+      }
+
       // Update service provider's service statistics
       await Service.updateMany(
         { user: proposal.service_provider_id },
@@ -1112,6 +1141,17 @@ exports.proposalAction = async (req, res) => {
     } else {
       // Reject the proposal
       proposal.status = "rejected";
+
+      // IMPORTANT: Update the corresponding Job record status
+      await Job.findOneAndUpdate(
+        {
+          service_provider: proposal.service_provider_id,
+          project_job: job_id,
+        },
+        {
+          status: "rejected",
+        }
+      );
     }
 
     await projectJob.save();
