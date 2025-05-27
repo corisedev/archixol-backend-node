@@ -36,10 +36,42 @@ exports.getAvailableJobs = async (req, res) => {
     );
 
     if (!userServices || userServices.length === 0) {
-      return res.status(400).json({
-        error:
+      const responseData = {
+        message:
           "No services found. Please create services first to see available jobs.",
-      });
+        jobs: [],
+        statistics: {
+          applied_jobs: 0,
+          available_jobs: 0,
+          success_rate: 0,
+          saved_jobs: 0,
+        },
+        pagination: {
+          current_page: 0,
+          total_pages: 0,
+          total_jobs: 0,
+          per_page: 0,
+        },
+        filters: {
+          matching_categories: [],
+          applied_filters: {
+            category: "all",
+            budget_range: {
+              min: null,
+              max: null,
+            },
+            location: null,
+            urgent_only: false,
+          },
+          sort: {
+            by: null,
+            order: null,
+          },
+        },
+      };
+
+      const encryptedData = encryptData(responseData);
+      return res.status(200).json({ data: encryptedData });
     }
 
     // Extract unique service categories and normalize to lowercase
@@ -390,7 +422,7 @@ exports.applyForJob = async (req, res) => {
     // Check if service provider has already applied using Job model
     const existingApplication = await Job.findOne({
       service_provider: userId,
-      project_job: job_id,
+      project_job: job_id, // Now this field exists in the schema
     });
 
     if (existingApplication) {
@@ -440,12 +472,12 @@ exports.applyForJob = async (req, res) => {
     projectJob.proposals.push(proposal);
     await projectJob.save();
 
-    // Create job application in Job model
+    // Create job application in Job model with project_job reference
     const jobApplication = await Job.create({
       service: service ? service._id : null,
       service_provider: userId,
       client: projectJob.client_id,
-      project_job: projectJob._id,
+      project_job: projectJob._id, // SET THE PROJECT_JOB REFERENCE
       status: "requested",
       price: Number(proposed_budget),
       payment_status: "pending",
@@ -605,7 +637,6 @@ exports.getMyApplications = async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 };
-
 // @desc    Update job application (withdraw, update proposal, etc.)
 // @route   POST /service/update_application
 // @access  Private (Service Provider Only)
@@ -627,11 +658,11 @@ exports.updateApplication = async (req, res) => {
         .json({ error: "Application ID and action are required" });
     }
 
-    // Find the job application
+    // Find the job application WITHOUT populate first to check if it exists
     const jobApplication = await Job.findOne({
       _id: application_id,
       service_provider: userId,
-    }).populate("project_job");
+    });
 
     if (!jobApplication) {
       return res.status(404).json({ error: "Application not found" });
@@ -653,15 +684,22 @@ exports.updateApplication = async (req, res) => {
         jobApplication.status = "cancelled";
         await jobApplication.save();
 
-        // Remove proposal from ProjectJob
-        const projectJob = await ProjectJob.findById(
-          jobApplication.project_job._id
-        );
-        if (projectJob) {
-          projectJob.proposals = projectJob.proposals.filter(
-            (proposal) => proposal.service_provider_id.toString() !== userId
-          );
-          await projectJob.save();
+        // Remove proposal from ProjectJob if project_job exists
+        if (jobApplication.project_job) {
+          try {
+            const projectJob = await ProjectJob.findById(
+              jobApplication.project_job
+            );
+            if (projectJob) {
+              projectJob.proposals = projectJob.proposals.filter(
+                (proposal) => proposal.service_provider_id.toString() !== userId
+              );
+              await projectJob.save();
+            }
+          } catch (projectError) {
+            console.error("Error updating ProjectJob proposals:", projectError);
+            // Continue execution even if ProjectJob update fails
+          }
         }
 
         break;
@@ -674,28 +712,42 @@ exports.updateApplication = async (req, res) => {
           });
         }
 
+        // Validate proposed budget
+        if (Number(proposed_budget) <= 0) {
+          return res.status(400).json({
+            error: "Proposed budget must be greater than 0",
+          });
+        }
+
         // Update job application
         jobApplication.requirements = proposal_text;
         jobApplication.price = Number(proposed_budget);
         await jobApplication.save();
 
-        // Update proposal in ProjectJob
-        const projectJobForUpdate = await ProjectJob.findById(
-          jobApplication.project_job._id
-        );
-        if (projectJobForUpdate) {
-          const proposalIndex = projectJobForUpdate.proposals.findIndex(
-            (proposal) => proposal.service_provider_id.toString() === userId
-          );
+        // Update proposal in ProjectJob if project_job exists
+        if (jobApplication.project_job) {
+          try {
+            const projectJobForUpdate = await ProjectJob.findById(
+              jobApplication.project_job
+            );
+            if (projectJobForUpdate) {
+              const proposalIndex = projectJobForUpdate.proposals.findIndex(
+                (proposal) => proposal.service_provider_id.toString() === userId
+              );
 
-          if (proposalIndex !== -1) {
-            projectJobForUpdate.proposals[proposalIndex].proposal_text =
-              proposal_text;
-            projectJobForUpdate.proposals[proposalIndex].proposed_budget =
-              Number(proposed_budget);
-            projectJobForUpdate.proposals[proposalIndex].proposed_timeline =
-              proposed_timeline;
-            await projectJobForUpdate.save();
+              if (proposalIndex !== -1) {
+                projectJobForUpdate.proposals[proposalIndex].proposal_text =
+                  proposal_text;
+                projectJobForUpdate.proposals[proposalIndex].proposed_budget =
+                  Number(proposed_budget);
+                projectJobForUpdate.proposals[proposalIndex].proposed_timeline =
+                  proposed_timeline;
+                await projectJobForUpdate.save();
+              }
+            }
+          } catch (projectError) {
+            console.error("Error updating ProjectJob proposals:", projectError);
+            // Continue execution even if ProjectJob update fails
           }
         }
 

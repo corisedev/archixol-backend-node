@@ -7,7 +7,7 @@ exports.handleServiceUpload = [
   // First handle the file uploads
   uploadServiceImages,
 
-  // Then decrypt the data field
+  // Then decrypt the data field and process images
   (req, res, next) => {
     try {
       console.log("Request after file upload:", req.body);
@@ -20,6 +20,16 @@ exports.handleServiceUpload = [
           service_images_urls = [...req.body.service_images_urls];
         } else {
           service_images_urls = [req.body.service_images_urls];
+        }
+      }
+
+      // Store service_images separately before decryption (for creation)
+      let service_images = [];
+      if (req.body.service_images) {
+        if (Array.isArray(req.body.service_images)) {
+          service_images = [...req.body.service_images];
+        } else {
+          service_images = [req.body.service_images];
         }
       }
 
@@ -47,12 +57,58 @@ exports.handleServiceUpload = [
         // Replace req.body with the decrypted data
         req.body = parsedData;
 
-        // Add back the service_images_urls that weren't part of the encrypted data
-        if (service_images_urls.length > 0) {
+        // Handle service images based on the scenario:
+
+        // 1. For service creation: combine existing service_images with new uploads
+        if (service_images.length > 0) {
+          req.body.service_images = [...service_images, ...newUploadedImages];
+          console.log(
+            "Service creation - combined service_images:",
+            req.body.service_images
+          );
+        }
+        // 2. For service updates: combine service_images_urls with new uploads
+        else if (service_images_urls.length > 0) {
           req.body.service_images_urls = service_images_urls;
+          // Add newly uploaded images to service_images array
+          if (newUploadedImages.length > 0) {
+            req.body.service_images = [
+              ...(req.body.service_images || []),
+              ...newUploadedImages,
+            ];
+          }
+          console.log(
+            "Service update - service_images_urls:",
+            req.body.service_images_urls
+          );
+          console.log(
+            "Service update - new service_images:",
+            req.body.service_images
+          );
+        }
+        // 3. If only new files are uploaded (no existing images)
+        else if (newUploadedImages.length > 0) {
+          req.body.service_images = newUploadedImages;
+          console.log(
+            "Only new uploads - service_images:",
+            req.body.service_images
+          );
         }
 
-        // Add newly uploaded images
+        // Also preserve any existing service_images from the decrypted data
+        if (
+          parsedData.service_images &&
+          Array.isArray(parsedData.service_images)
+        ) {
+          req.body.service_images = [
+            ...(parsedData.service_images || []),
+            ...(req.body.service_images || []),
+          ];
+          // Remove duplicates
+          req.body.service_images = [...new Set(req.body.service_images)];
+        }
+
+        // Add information about new uploads for controller use
         if (newUploadedImages.length > 0) {
           req.body.new_uploaded_images = newUploadedImages;
         }

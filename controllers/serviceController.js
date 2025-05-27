@@ -266,7 +266,7 @@ exports.getDashboard = async (req, res) => {
 exports.createService = async (req, res) => {
   try {
     const {
-      service_images,
+      service_images, // This comes from the middleware processing
       service_title,
       service_category,
       service_description,
@@ -286,29 +286,61 @@ exports.createService = async (req, res) => {
         .json({ error: "Only service providers can create services" });
     }
 
-    // Create a new service with the image paths from the middleware
+    // Validate required fields
+    if (!service_title || !service_category || !service_description) {
+      return res.status(400).json({
+        error: "Service title, category, and description are required",
+      });
+    }
+
+    // Process service images - ensure it's an array
+    const processedImages = Array.isArray(service_images)
+      ? service_images
+      : service_images
+      ? [service_images]
+      : [];
+
+    console.log("Processed service images:", processedImages);
+
+    // Create a new service with the processed data
     const service = await Service.create({
       user: req.user.id,
-      service_images, // This will contain the file paths processed by the middleware
+      service_images: processedImages, // Use processed images array
       service_title,
       service_category,
       service_description,
-      service_status,
-      service_faqs,
-      service_process,
-      service_feature,
-      service_tags,
+      service_status: service_status !== undefined ? service_status : false,
+      service_faqs: service_faqs || [],
+      service_process: service_process || [],
+      service_feature: service_feature || [],
+      service_tags: service_tags || [],
     });
+
+    // Format response with consistent ID
+    const serviceResponse = {
+      id: service._id,
+      service_title: service.service_title,
+      service_category: service.service_category,
+      service_description: service.service_description,
+      service_status: service.service_status,
+      service_images: service.service_images,
+      service_faqs: service.service_faqs,
+      service_process: service.service_process,
+      service_feature: service.service_feature,
+      service_tags: service.service_tags,
+      created_at: service.createdAt,
+      updated_at: service.updatedAt,
+    };
 
     const responseData = {
       message: "Service created successfully",
-      service,
+      service: serviceResponse,
     };
 
     const encryptedData = encryptData(responseData);
     res.status(201).json({ data: encryptedData });
   } catch (err) {
-    console.error(err);
+    console.error("Error in createService:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
@@ -414,8 +446,9 @@ exports.updateService = async (req, res) => {
       service_process,
       service_feature,
       service_tags,
-      service_images_urls, // These are kept URLs from existing images
-      new_uploaded_images, // These are newly uploaded images
+      service_images_urls, // Existing images to keep
+      service_images, // New uploaded images (processed by middleware)
+      new_uploaded_images, // Alternative field name for new uploads
     } = req.body;
 
     if (!service_id) {
@@ -436,43 +469,64 @@ exports.updateService = async (req, res) => {
         .json({ error: "Not authorized to update this service" });
     }
 
-    // Process service_images_urls (existing images to keep)
-    const existingImages = Array.isArray(service_images_urls)
-      ? service_images_urls
-      : service_images_urls
-      ? [service_images_urls]
-      : [];
+    // Process existing images to keep
+    let existingImages = [];
+    if (service_images_urls) {
+      existingImages = Array.isArray(service_images_urls)
+        ? service_images_urls
+        : [service_images_urls];
+    }
 
     console.log("Existing images to keep:", existingImages);
 
     // Process new uploaded images
-    const newImages = Array.isArray(new_uploaded_images)
-      ? new_uploaded_images
-      : new_uploaded_images
-      ? [new_uploaded_images]
-      : [];
+    let newImages = [];
+
+    // Check for new images in different possible fields
+    if (service_images && Array.isArray(service_images)) {
+      newImages = [...service_images];
+    } else if (service_images && typeof service_images === "string") {
+      newImages = [service_images];
+    }
+
+    // Also check alternative field name
+    if (new_uploaded_images) {
+      const altNewImages = Array.isArray(new_uploaded_images)
+        ? new_uploaded_images
+        : [new_uploaded_images];
+      newImages = [...newImages, ...altNewImages];
+    }
 
     console.log("Newly uploaded images:", newImages);
 
-    // Combine all images
-    const combinedImages = [...existingImages, ...newImages];
+    // Combine all images and remove duplicates
+    const combinedImages = [...new Set([...existingImages, ...newImages])];
     console.log("Combined images for update:", combinedImages);
 
-    // Handle case when no images are provided but service had images before
-    // If combinedImages is empty but you don't want to remove all images,
-    // don't include service_images in the update
+    // Prepare update data
     const updateData = {
-      service_title,
-      service_category,
-      service_description,
-      service_status,
-      service_faqs,
-      service_process,
-      service_feature,
-      service_tags,
-      service_images: combinedImages,
       updatedAt: Date.now(),
     };
+
+    // Only update fields that are provided
+    if (service_title !== undefined) updateData.service_title = service_title;
+    if (service_category !== undefined)
+      updateData.service_category = service_category;
+    if (service_description !== undefined)
+      updateData.service_description = service_description;
+    if (service_status !== undefined)
+      updateData.service_status = service_status;
+    if (service_faqs !== undefined) updateData.service_faqs = service_faqs;
+    if (service_process !== undefined)
+      updateData.service_process = service_process;
+    if (service_feature !== undefined)
+      updateData.service_feature = service_feature;
+    if (service_tags !== undefined) updateData.service_tags = service_tags;
+
+    // Always update images (even if empty array to clear images)
+    updateData.service_images = combinedImages;
+
+    console.log("Update data:", updateData);
 
     // Update service
     service = await Service.findByIdAndUpdate(service_id, updateData, {
@@ -493,7 +547,7 @@ exports.updateService = async (req, res) => {
     const encryptedData = encryptData(responseData);
     res.status(200).json({ data: encryptedData });
   } catch (err) {
-    console.error(err);
+    console.error("Error in updateService:", err);
     res.status(500).json({ error: "Server error" });
   }
 };

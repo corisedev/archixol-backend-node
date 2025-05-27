@@ -14,8 +14,17 @@ const {
 const { protect } = require("../middleware/auth");
 const { decryptRequest } = require("../middleware/encryption");
 
-// Apply decryption middleware to all routes that receive data
-router.use(decryptRequest);
+const conditionalDecrypt = (req, res, next) => {
+  // Skip decryption for GET routes or routes that don't send encrypted data
+  if (req.path.includes("/verify_email/")) {
+    return next();
+  }
+  // Apply decryption for POST routes
+  return decryptRequest(req, res, next);
+};
+
+// Apply conditional decryption middleware to all routes
+router.use(conditionalDecrypt);
 
 // Public routes
 router.post("/signup", signup);
