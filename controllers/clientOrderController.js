@@ -1,5 +1,5 @@
-// controllers/clientOrderController.js
-const ClientOrder = require("../models/ClientOrder");
+// controllers/clientOrderController.js (Updated to use Order table)
+const Order = require("../models/Order");
 const Product = require("../models/Product");
 const User = require("../models/User");
 const Customer = require("../models/Customer");
@@ -100,12 +100,28 @@ exports.placeOrder = async (req, res) => {
       const itemTotal = product.price * item.quantity;
       totalOrderValue += itemTotal;
 
+      // Convert to Order model format
       supplierGroups[supplierId].items.push({
         product_id: product._id,
+        id: product._id, // For compatibility with existing Order model
         title: product.title,
+        category: product.category,
+        description: product.description,
         price: product.price,
-        quantity: item.quantity,
-        total: itemTotal,
+        compare_at_price: product.compare_at_price,
+        cost_per_item: product.cost_per_item,
+        margin: product.margin,
+        profit: product.profit,
+        quantity: product.quantity,
+        weight: product.weight,
+        physical_product: product.physical_product,
+        continue_out_of_stock: product.continue_out_of_stock,
+        tax: product.tax,
+        track_quantity: product.track_quantity,
+        variant_option: product.variant_option,
+        units: product.units,
+        media: product.media,
+        qty: item.quantity, // Ordered quantity
       });
 
       supplierGroups[supplierId].subtotal += itemTotal;
@@ -129,47 +145,8 @@ exports.placeOrder = async (req, res) => {
       const orderTotal =
         orderData.subtotal + proportionalShipping + proportionalTax;
 
-      // Create the order
-      const order = await ClientOrder.create({
-        client_id: clientId,
-        supplier_id: supplierId,
-        items: orderData.items,
-        subtotal: orderData.subtotal,
-        tax: proportionalTax,
-        shipping: proportionalShipping,
-        total: orderTotal,
-        shipping_address: `${address}${
-          apartment ? `, ${apartment}` : ""
-        }, ${city}, ${province ? province + ", " : ""}${country} ${postalCode}`,
-        notes: discountCode ? `Discount code applied: ${discountCode}` : "",
-        // Store customer details in the order
-        customer_details: {
-          email,
-          firstName,
-          lastName,
-          phone,
-          address,
-          apartment,
-          city,
-          country,
-          province,
-          postalCode,
-          shippingMethod,
-          discountCode,
-        },
-      });
-
-      // Update product quantities if tracking is enabled
-      for (const item of orderData.items) {
-        const product = await Product.findById(item.product_id);
-        if (product && product.track_quantity) {
-          product.quantity = Math.max(0, product.quantity - item.quantity);
-          await product.save();
-        }
-      }
-
       // Create or update customer record for this supplier
-      await createOrUpdateCustomer(clientId, supplierId, {
+      const customer = await createOrUpdateCustomer(clientId, supplierId, {
         email,
         firstName,
         lastName,
@@ -179,6 +156,65 @@ exports.placeOrder = async (req, res) => {
         }${country} ${postalCode}`,
         orderTotal,
       });
+
+      // Create the order using the existing Order model
+      const order = await Order.create({
+        supplier_id: supplierId,
+        customer_id: customer._id, // Use the customer ID
+        products: orderData.items,
+        calculations: {
+          subtotal: orderData.subtotal,
+          discountPercentage: 0,
+          taxPercentage:
+            proportionalTax > 0
+              ? (proportionalTax / orderData.subtotal) * 100
+              : 0,
+          totalDiscount: 0,
+          totalTax: proportionalTax,
+          total: orderTotal,
+          shippingAddress: `${address}${
+            apartment ? `, ${apartment}` : ""
+          }, ${city}, ${
+            province ? province + ", " : ""
+          }${country} ${postalCode}`,
+        },
+        notes: discountCode ? `Discount code applied: ${discountCode}` : "",
+        market_price: "USD", // Default currency
+        tags: ["client_order"], // Tag to identify client orders
+        channel: "Online Store", // Different from supplier's "Offline Store"
+        payment_due_later: shippingMethod === "cash_on_delivery",
+        shipping_address: `${address}${
+          apartment ? `, ${apartment}` : ""
+        }, ${city}, ${province ? province + ", " : ""}${country} ${postalCode}`,
+        bill_paid: 0, // Initially not paid
+        // Store customer details in notes for easy access
+        notes: JSON.stringify({
+          customer_details: {
+            email,
+            firstName,
+            lastName,
+            phone,
+            address,
+            apartment,
+            city,
+            country,
+            province,
+            postalCode,
+            shippingMethod,
+            discountCode,
+          },
+          discount_code: discountCode,
+        }),
+      });
+
+      // Update product quantities if tracking is enabled
+      for (const item of orderData.items) {
+        const product = await Product.findById(item.product_id);
+        if (product && product.track_quantity) {
+          product.quantity = Math.max(0, product.quantity - item.qty);
+          await product.save();
+        }
+      }
 
       createdOrders.push({
         order_id: order._id,
@@ -230,55 +266,89 @@ exports.getOrderDetails = async (req, res) => {
     }
 
     // Find the order
-    const order = await ClientOrder.findOne({
-      _id: order_id,
-      client_id: clientId,
-    })
+    const order = await Order.findById(order_id)
       .populate("supplier_id", "username email")
-      .populate("items.product_id", "title description media");
+      .populate(
+        "customer_id",
+        "first_name last_name email phone_number default_address"
+      );
 
     if (!order) {
       return res.status(404).json({ error: "Order not found" });
+    }
+
+    // Verify this order belongs to a customer created by this client
+    const customer = await Customer.findById(order.customer_id);
+    if (!customer) {
+      return res.status(404).json({ error: "Customer not found" });
+    }
+
+    // Check if this customer was created by this client
+    // We'll use email matching as the verification method
+    const clientProfile = await ClientProfile.findOne({ user_id: clientId });
+    const user = await User.findById(clientId);
+    const clientEmail = user.email;
+
+    // Parse customer details from notes
+    let customerDetails = {};
+    try {
+      const notesData = JSON.parse(order.notes || "{}");
+      customerDetails = notesData.customer_details || {};
+    } catch (e) {
+      // If notes aren't JSON, treat as string
+      customerDetails = {};
+    }
+
+    // Verify access - either email matches or customer email matches client email
+    if (
+      customer.email !== clientEmail &&
+      customerDetails.email !== clientEmail
+    ) {
+      return res.status(403).json({ error: "Access denied" });
     }
 
     // Format the response to match the expected structure
     const orderDetails = {
       order_id: order._id,
       order_no: order.order_no,
-      email: order.customer_details?.email || "",
-      firstName: order.customer_details?.firstName || "",
-      lastName: order.customer_details?.lastName || "",
-      address: order.customer_details?.address || "",
-      apartment: order.customer_details?.apartment || "",
-      city: order.customer_details?.city || "",
-      country: order.customer_details?.country || "United States",
-      province: order.customer_details?.province || "",
-      postalCode: order.customer_details?.postalCode || "",
-      phone: order.customer_details?.phone || "",
-      shippingMethod:
-        order.customer_details?.shippingMethod || "cash_on_delivery",
-      discountCode: order.customer_details?.discountCode || "",
-      items: order.items.map((item) => ({
-        product_id: item.product_id._id,
+      email: customerDetails.email || customer.email,
+      firstName: customerDetails.firstName || customer.first_name,
+      lastName: customerDetails.lastName || customer.last_name,
+      address: customerDetails.address || customer.default_address,
+      apartment: customerDetails.apartment || "",
+      city: customerDetails.city || "",
+      country: customerDetails.country || "United States",
+      province: customerDetails.province || "",
+      postalCode: customerDetails.postalCode || "",
+      phone: customerDetails.phone || customer.phone_number,
+      shippingMethod: customerDetails.shippingMethod || "cash_on_delivery",
+      discountCode: customerDetails.discountCode || "",
+      items: order.products.map((item) => ({
+        product_id: item.product_id || item.id,
         title: item.title,
         price: item.price,
-        quantity: item.quantity,
-        total: item.total,
-        product_details: item.product_id,
+        quantity: item.qty,
+        total: item.price * item.qty,
+        product_details: {
+          title: item.title,
+          description: item.description,
+          media: item.media,
+          category: item.category,
+        },
       })),
-      subtotal: order.subtotal,
-      shipping: order.shipping,
-      tax: order.tax,
-      total: order.total,
+      subtotal: order.calculations.subtotal,
+      shipping: order.calculations.shippingAddress ? 0 : 0, // Shipping calculation
+      tax: order.calculations.totalTax,
+      total: order.calculations.total,
       status: order.status,
-      payment_status: order.payment_status,
+      payment_status: order.payment_status ? "paid" : "pending",
       supplier: {
         id: order.supplier_id._id,
         name: order.supplier_id.username,
         email: order.supplier_id.email,
       },
-      placed_at: order.placed_at,
-      updated_at: order.updated_at,
+      placed_at: order.createdAt,
+      updated_at: order.updatedAt,
     };
 
     const responseData = {
@@ -307,13 +377,20 @@ exports.requestReturn = async (req, res) => {
     }
 
     // Find the order
-    const order = await ClientOrder.findOne({
-      _id: order_id,
-      client_id: clientId,
-    }).populate("supplier_id", "username email");
+    const order = await Order.findById(order_id)
+      .populate("supplier_id", "username email")
+      .populate("customer_id", "first_name last_name email");
 
     if (!order) {
       return res.status(404).json({ error: "Order not found" });
+    }
+
+    // Verify client access
+    const user = await User.findById(clientId);
+    const customer = await Customer.findById(order.customer_id);
+
+    if (customer.email !== user.email) {
+      return res.status(403).json({ error: "Access denied" });
     }
 
     // Check if order can be returned
@@ -321,7 +398,7 @@ exports.requestReturn = async (req, res) => {
       return res.status(400).json({ error: "Order cannot be returned" });
     }
 
-    // Check if order is delivered (you might want to add time limits)
+    // Check if order is delivered
     if (order.status !== "delivered") {
       return res.status(400).json({
         error: "Only delivered orders can be returned",
@@ -330,14 +407,25 @@ exports.requestReturn = async (req, res) => {
 
     // Update order status
     order.status = "returned";
-    order.return_requested_at = new Date();
-    order.return_reason = reason || "";
+    // Store return information in notes
+    let notesData = {};
+    try {
+      notesData = JSON.parse(order.notes || "{}");
+    } catch (e) {
+      notesData = { original_notes: order.notes };
+    }
+
+    notesData.return_requested_at = new Date();
+    notesData.return_reason = reason || "";
+    order.notes = JSON.stringify(notesData);
+
     await order.save();
 
-    // Send return request email to supplier and client
+    // Send return request email
     try {
       await sendReturnRequestEmail({
         order,
+        customer,
         reason: reason || "No reason provided",
       });
     } catch (emailError) {
@@ -371,13 +459,20 @@ exports.cancelOrder = async (req, res) => {
     }
 
     // Find the order
-    const order = await ClientOrder.findOne({
-      _id: order_id,
-      client_id: clientId,
-    }).populate("supplier_id", "username email");
+    const order = await Order.findById(order_id)
+      .populate("supplier_id", "username email")
+      .populate("customer_id", "first_name last_name email");
 
     if (!order) {
       return res.status(404).json({ error: "Order not found" });
+    }
+
+    // Verify client access
+    const user = await User.findById(clientId);
+    const customer = await Customer.findById(order.customer_id);
+
+    if (customer.email !== user.email) {
+      return res.status(403).json({ error: "Access denied" });
     }
 
     // Check if order can be cancelled
@@ -393,23 +488,35 @@ exports.cancelOrder = async (req, res) => {
 
     // Update order status
     order.status = "cancelled";
-    order.cancelled_at = new Date();
-    order.cancellation_reason = reason || "";
+
+    // Store cancellation information in notes
+    let notesData = {};
+    try {
+      notesData = JSON.parse(order.notes || "{}");
+    } catch (e) {
+      notesData = { original_notes: order.notes };
+    }
+
+    notesData.cancelled_at = new Date();
+    notesData.cancellation_reason = reason || "";
+    order.notes = JSON.stringify(notesData);
+
     await order.save();
 
     // Restore product quantities if tracking is enabled
-    for (const item of order.items) {
-      const product = await Product.findById(item.product_id);
+    for (const item of order.products) {
+      const product = await Product.findById(item.product_id || item.id);
       if (product && product.track_quantity) {
-        product.quantity += item.quantity;
+        product.quantity += item.qty;
         await product.save();
       }
     }
 
-    // Send cancellation email to supplier and client
+    // Send cancellation email
     try {
       await sendCancellationEmail({
         order,
+        customer,
         reason: reason || "No reason provided",
       });
     } catch (emailError) {
@@ -419,7 +526,7 @@ exports.cancelOrder = async (req, res) => {
     const responseData = {
       message: "Order cancelled successfully",
       order_id: order._id,
-      cancelled_at: order.cancelled_at,
+      cancelled_at: notesData.cancelled_at,
     };
 
     const encryptedData = encryptData(responseData);
@@ -446,11 +553,11 @@ exports.getCheckoutDetails = async (req, res) => {
     // Get client profile details
     const clientProfile = await ClientProfile.findOne({ user_id: clientId });
 
-    // Get recent orders to prefill some details
-    const recentOrders = await ClientOrder.find({
-      client_id: clientId,
+    // Get recent orders to prefill some details (from Customer records)
+    const recentCustomers = await Customer.find({
+      email: user.email,
     })
-      .sort({ placed_at: -1 })
+      .sort({ updatedAt: -1 })
       .limit(1);
 
     let prefillData = {};
@@ -473,20 +580,19 @@ exports.getCheckoutDetails = async (req, res) => {
       };
     }
 
-    // If no profile data, try to use recent order data
-    if (recentOrders.length > 0 && recentOrders[0].customer_details) {
-      const lastOrder = recentOrders[0].customer_details;
+    // If no profile data, try to use recent customer data
+    if (recentCustomers.length > 0) {
+      const lastCustomer = recentCustomers[0];
       prefillData = {
-        email: lastOrder.email || user.email,
-        firstName: lastOrder.firstName || prefillData.firstName || "",
-        lastName: lastOrder.lastName || prefillData.lastName || "",
-        phone: lastOrder.phone || prefillData.phone || "",
-        address: lastOrder.address || prefillData.address || "",
-        apartment: lastOrder.apartment || "",
-        city: lastOrder.city || prefillData.city || "",
-        country: lastOrder.country || "United States",
-        province: lastOrder.province || "",
-        postalCode: lastOrder.postalCode || "",
+        email: lastCustomer.email || user.email,
+        firstName: lastCustomer.first_name || prefillData.firstName || "",
+        lastName: lastCustomer.last_name || prefillData.lastName || "",
+        phone: lastCustomer.phone_number || prefillData.phone || "",
+        address: lastCustomer.default_address || prefillData.address || "",
+        city: prefillData.city || "",
+        country: "United States",
+        province: "",
+        postalCode: "",
       };
     }
 
@@ -603,14 +709,14 @@ const sendOrderConfirmationEmail = async (orderData) => {
 
 // Helper function to send return request email
 const sendReturnRequestEmail = async (returnData) => {
-  const { order, reason } = returnData;
-  const customerEmail = order.customer_details?.email;
+  const { order, customer, reason } = returnData;
+  const customerEmail = customer.email;
   const supplierEmail = order.supplier_id?.email;
 
   if (customerEmail) {
     const customerEmailTemplate = `
       <h2>Return Request Received</h2>
-      <p>Dear ${order.customer_details.firstName},</p>
+      <p>Dear ${customer.first_name},</p>
       <p>We have received your return request for order #${order.order_no}.</p>
       <p><strong>Reason:</strong> ${reason}</p>
       <p>We will review your request and get back to you within 24-48 hours.</p>
@@ -629,12 +735,14 @@ const sendReturnRequestEmail = async (returnData) => {
     const supplierEmailTemplate = `
       <h2>Return Request Notification</h2>
       <p>A return request has been submitted for order #${order.order_no}.</p>
-      <p><strong>Customer:</strong> ${order.customer_details.firstName} ${
-      order.customer_details.lastName
+      <p><strong>Customer:</strong> ${customer.first_name} ${
+      customer.last_name
     }</p>
-      <p><strong>Email:</strong> ${order.customer_details.email}</p>
+      <p><strong>Email:</strong> ${customer.email}</p>
       <p><strong>Reason:</strong> ${reason}</p>
-      <p><strong>Order Total:</strong> $${order.total.toFixed(2)}</p>
+      <p><strong>Order Total:</strong> $${order.calculations.total.toFixed(
+        2
+      )}</p>
       <p>Please review and process this return request.</p>
     `;
 
@@ -648,17 +756,19 @@ const sendReturnRequestEmail = async (returnData) => {
 
 // Helper function to send cancellation email
 const sendCancellationEmail = async (cancellationData) => {
-  const { order, reason } = cancellationData;
-  const customerEmail = order.customer_details?.email;
+  const { order, customer, reason } = cancellationData;
+  const customerEmail = customer.email;
   const supplierEmail = order.supplier_id?.email;
 
   if (customerEmail) {
     const customerEmailTemplate = `
       <h2>Order Cancellation Confirmation</h2>
-      <p>Dear ${order.customer_details.firstName},</p>
+      <p>Dear ${customer.first_name},</p>
       <p>Your order #${order.order_no} has been successfully cancelled.</p>
       <p><strong>Reason:</strong> ${reason}</p>
-      <p><strong>Order Total:</strong> $${order.total.toFixed(2)}</p>
+      <p><strong>Order Total:</strong> $${order.calculations.total.toFixed(
+        2
+      )}</p>
       <p>If you paid for this order, your refund will be processed within 3-5 business days.</p>
       <p>Thank you for understanding.</p>
       <p>The Archixol Team</p>
@@ -675,12 +785,14 @@ const sendCancellationEmail = async (cancellationData) => {
     const supplierEmailTemplate = `
       <h2>Order Cancellation Notification</h2>
       <p>Order #${order.order_no} has been cancelled by the customer.</p>
-      <p><strong>Customer:</strong> ${order.customer_details.firstName} ${
-      order.customer_details.lastName
+      <p><strong>Customer:</strong> ${customer.first_name} ${
+      customer.last_name
     }</p>
-      <p><strong>Email:</strong> ${order.customer_details.email}</p>
+      <p><strong>Email:</strong> ${customer.email}</p>
       <p><strong>Reason:</strong> ${reason}</p>
-      <p><strong>Order Total:</strong> $${order.total.toFixed(2)}</p>
+      <p><strong>Order Total:</strong> $${order.calculations.total.toFixed(
+        2
+      )}</p>
       <p>Please update your inventory accordingly.</p>
     `;
 

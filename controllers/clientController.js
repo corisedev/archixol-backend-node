@@ -2,7 +2,7 @@
 const User = require("../models/User");
 const Job = require("../models/Job");
 const ProjectJob = require("../models/ProjectJob");
-const ClientOrder = require("../models/ClientOrder");
+const Order = require("../models/Order");
 const Product = require("../models/Product");
 const Service = require("../models/Service");
 const UserProfile = require("../models/UserProfile");
@@ -255,26 +255,26 @@ exports.getOrders = async (req, res) => {
     const userId = req.user.id;
 
     // Get order statistics
-    const totalOrders = await ClientOrder.countDocuments({ client_id: userId });
+    const totalOrders = await Order.countDocuments({ client_id: userId });
 
-    const pendingPayments = await ClientOrder.countDocuments({
+    const pendingPayments = await Order.countDocuments({
       client_id: userId,
-      payment_status: "pending",
+      payment_status: false,
     });
 
-    const beingProcessed = await ClientOrder.countDocuments({
+    const beingProcessed = await Order.countDocuments({
       client_id: userId,
       status: { $in: ["processing", "shipped"] },
     });
 
-    const spentResult = await ClientOrder.aggregate([
+    const spentResult = await Order.aggregate([
       { $match: { client_id: userId, payment_status: "paid" } },
       { $group: { _id: null, totalSpent: { $sum: "$total" } } },
     ]);
     const totalSpent = spentResult.length > 0 ? spentResult[0].totalSpent : 0;
 
     // Get orders list
-    const orders = await ClientOrder.find({ client_id: userId })
+    const orders = await Order.find({ customer_id: userId })
       .populate({
         path: "supplier_id",
         select: "username",
