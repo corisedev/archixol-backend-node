@@ -4,6 +4,7 @@ const Job = require("../models/Job");
 const ProjectJob = require("../models/ProjectJob");
 const Order = require("../models/Order");
 const Product = require("../models/Product");
+const Customer = require("../models/Customer");
 const Service = require("../models/Service");
 const UserProfile = require("../models/UserProfile");
 const { encryptData } = require("../utils/encryptResponse");
@@ -250,46 +251,78 @@ exports.createJob = async (req, res) => {
 // @desc    Get Orders
 // @route   GET /client/orders
 // @access  Private (Client Only)
+// Fixed getOrders function in clientController.js
 exports.getOrders = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // Get order statistics
-    const totalOrders = await Order.countDocuments({ client_id: userId });
+    // Get order statistics from Order model (where client orders are stored)
+    // The issue was here - we need to find orders where the customer was created by this client
+    // We'll get all customers created for orders by this client's email first
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Find all customers with this client's email (these are created when client places orders)
+    const customers = await Customer.find({ email: user.email });
+    const customerIds = customers.map((customer) => customer._id);
+
+    // Now get orders for these customers
+    const totalOrders = await Order.countDocuments({
+      customer_id: { $in: customerIds },
+    });
 
     const pendingPayments = await Order.countDocuments({
-      client_id: userId,
+      customer_id: { $in: customerIds },
       payment_status: false,
     });
 
     const beingProcessed = await Order.countDocuments({
-      client_id: userId,
+      customer_id: { $in: customerIds },
       status: { $in: ["processing", "shipped"] },
     });
 
     const spentResult = await Order.aggregate([
-      { $match: { client_id: userId, payment_status: "paid" } },
-      { $group: { _id: null, totalSpent: { $sum: "$total" } } },
+      { $match: { customer_id: { $in: customerIds }, payment_status: true } },
+      { $group: { _id: null, totalSpent: { $sum: "$calculations.total" } } },
     ]);
     const totalSpent = spentResult.length > 0 ? spentResult[0].totalSpent : 0;
 
     // Get orders list
-    const orders = await Order.find({ customer_id: userId })
+    const orders = await Order.find({ customer_id: { $in: customerIds } })
       .populate({
         path: "supplier_id",
         select: "username",
       })
-      .sort({ placed_at: -1 })
+      .populate({
+        path: "customer_id",
+        select: "first_name last_name email",
+      })
+      .sort({ createdAt: -1 })
       .lean();
 
     // Format orders for response
     const ordersList = orders.map((order) => ({
       order_id: order._id,
-      created_at: order.placed_at,
+      order_no: order.order_no,
+      created_at: order.createdAt,
       supplier_name: order.supplier_id?.username || "Unknown Supplier",
-      items: order.items.map((item) => ({ name: item.title })),
-      total: order.total,
+      customer_name: order.customer_id
+        ? `${order.customer_id.first_name} ${order.customer_id.last_name}`
+        : "Unknown Customer",
+      items:
+        order.products?.map((item) => ({
+          name: item.title,
+          quantity: item.qty,
+          price: item.price,
+        })) || [],
+      subtotal: order.calculations?.subtotal || 0,
+      total: order.calculations?.total || 0,
       status: order.status,
+      payment_status: order.payment_status ? "paid" : "pending",
+      shipping_address:
+        order.calculations?.shippingAddress || order.shipping_address || "",
     }));
 
     const responseData = {
@@ -308,7 +341,6 @@ exports.getOrders = async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 };
-
 // @desc    Get Products
 // @route   GET /client/products
 // @access  Private (Client Only)
