@@ -21,25 +21,21 @@ exports.getClientDashboard = async (req, res) => {
       status: { $in: ["accepted", "in_progress"] },
     });
 
-    // Calculate total spent (sum of completed and paid jobs)
-    const totalSpentResult = await Job.aggregate([
-      {
-        $match: {
-          client: userId,
-          status: "completed",
-          payment_status: "paid",
-        },
-      },
-      {
-        $group: {
-          _id: null,
-          totalSpent: { $sum: "$price" },
-        },
-      },
-    ]);
+    const projectJobs = await ProjectJob.find({ client_id: userId })
+      .populate({
+        path: "selected_provider",
+        select: "username user_type email",
+      })
+      .sort({ createdAt: -1 })
+      .lean();
 
-    const totalSpent =
-      totalSpentResult.length > 0 ? totalSpentResult[0].totalSpent : 0;
+    const totalSpent = projectJobs.reduce((sum, project) => {
+      // Include completed projects (money was spent) and in-progress projects (money is committed)
+      if (project.status === "completed") {
+        return sum + (project.budget || 0);
+      }
+      return sum;
+    }, 0);
 
     // Get pending orders count (jobs that are requested but not yet accepted)
     const pendingOrdersCount = await Job.countDocuments({
@@ -47,11 +43,12 @@ exports.getClientDashboard = async (req, res) => {
       status: "requested",
     });
 
-    // Get project completion count (completed jobs)
-    const projectCompletionCount = await Job.countDocuments({
-      client: userId,
+    const projectCompletionCount = await ProjectJob.countDocuments({
+      client_id: userId,
       status: "completed",
     });
+
+    const totalCompletionCount = projectCompletionCount;
 
     // Get purchased services (recent completed jobs with service details)
     const purchasedServices = await Job.find({
@@ -85,7 +82,7 @@ exports.getClientDashboard = async (req, res) => {
       current_projects: currentProjectsCount,
       total_spent: totalSpent,
       pending_orders: pendingOrdersCount,
-      project_completion: projectCompletionCount,
+      project_completion: totalCompletionCount,
       purchased_services: formattedPurchasedServices,
     };
 
@@ -575,9 +572,11 @@ exports.getMyProjects = async (req, res) => {
       (project) => project.status === "completed"
     ).length;
 
-    // Calculate total investments (sum of all project budgets)
+    // FIXED: Calculate total investments (include completed projects in investment calculation)
     const totalInvestments = projectJobs.reduce((sum, project) => {
+      // Include completed projects (money was spent) and in-progress projects (money is committed)
       if (
+        project.status === "completed" ||
         project.status === "pending_client_approval" ||
         project.status === "in_progress"
       ) {
@@ -714,6 +713,7 @@ exports.getMyProjects = async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 };
+
 // @desc    Get all proposals for a specific job posted by client
 // @route   POST /client/get_job_proposals
 // @access  Private (Client Only)
@@ -1588,7 +1588,7 @@ exports.completeProject = async (req, res) => {
     // Update project status to completed
     project.status = "completed";
     project.completed_at = new Date();
-    project.payment_status = final_payment_amount ? "paid" : "pending";
+    project.payment_status = "paid";
 
     // Add completion feedback
     const completionEntry = `\n\n[${new Date().toISOString()}] CLIENT COMPLETION:`;

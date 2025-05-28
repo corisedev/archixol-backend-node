@@ -627,7 +627,7 @@ exports.getOngoingProjects = async (req, res) => {
     // Get ongoing projects where this service provider is selected
     const projects = await ProjectJob.find({
       selected_provider: userId,
-      status: "in_progress",
+      status: { $in: ["in_progress", "completed", "pending_client_approval"] },
     })
       .populate({
         path: "client_id",
@@ -640,7 +640,7 @@ exports.getOngoingProjects = async (req, res) => {
 
     const totalProjects = await ProjectJob.countDocuments({
       selected_provider: userId,
-      status: "in_progress",
+      status: { $in: ["in_progress", "completed"] },
     });
 
     // Format projects with additional details
@@ -716,24 +716,82 @@ exports.getOngoingProjects = async (req, res) => {
       })
     );
 
-    // Get summary statistics for service provider
+    // FIXED: Get summary statistics for service provider with proper ObjectId conversion
+    const mongoose = require("mongoose");
+    const userObjectId = new mongoose.Types.ObjectId(userId);
+
     const stats = await ProjectJob.aggregate([
-      { $match: { selected_provider: userId } },
+      {
+        $match: {
+          selected_provider: userObjectId, // Convert string to ObjectId
+        },
+      },
       {
         $group: {
           _id: "$status",
           count: { $sum: 1 },
-          totalEarnings: { $sum: "$budget" },
+          totalEarnings: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [{ $eq: ["$status", "completed"] }],
+                },
+                "$budget",
+                0,
+              ],
+            },
+          },
         },
       },
     ]);
 
+    console.log("Aggregation stats result:", stats); // Debug log
+
+    // ALTERNATIVE: Use simple queries for more reliable results
+    const ongoingCount = await ProjectJob.countDocuments({
+      selected_provider: userId,
+      status: "in_progress",
+    });
+
+    const completedCount = await ProjectJob.countDocuments({
+      selected_provider: userId,
+      status: "completed",
+    });
+
+    const totalProjectCount = await ProjectJob.countDocuments({
+      selected_provider: userId,
+      status: { $in: ["in_progress", "completed", "pending_client_approval"] },
+    });
+
+    const projectJobs = await ProjectJob.find({ selected_provider: userId })
+      .populate({
+        path: "selected_provider",
+        select: "username user_type email",
+      })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const totalEarnings = projectJobs.reduce((sum, project) => {
+      // Include completed projects (money was spent) and in-progress projects (money is committed)
+      if (project.status === "completed") {
+        return sum + (project.budget || 0);
+      }
+      return sum;
+    }, 0);
+
+    console.log("Manual counts:", {
+      ongoingCount,
+      completedCount,
+      totalProjectCount,
+      totalEarnings,
+      userId,
+    }); // Debug log
+
     const summary = {
-      ongoing_projects: stats.find((s) => s._id === "in_progress")?.count || 0,
-      completed_projects: stats.find((s) => s._id === "completed")?.count || 0,
-      total_earnings:
-        stats.find((s) => s._id === "completed")?.totalEarnings || 0,
-      total_projects: stats.reduce((sum, s) => sum + s.count, 0),
+      ongoing_projects: ongoingCount,
+      completed_projects: completedCount,
+      total_earnings: totalEarnings,
+      total_projects: totalProjectCount,
     };
 
     const responseData = {
@@ -746,6 +804,11 @@ exports.getOngoingProjects = async (req, res) => {
         per_page: parseInt(limit),
       },
       summary: summary,
+      debug_info: {
+        user_id: userId,
+        user_object_id: userObjectId.toString(),
+        stats_from_aggregation: stats,
+      },
     };
 
     const encryptedData = encryptData(responseData);
