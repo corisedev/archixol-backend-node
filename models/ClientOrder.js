@@ -1,4 +1,4 @@
-// models/ClientOrder.js
+// models/ClientOrder.js (Updated)
 const mongoose = require("mongoose");
 const { v4: uuidv4 } = require("uuid");
 
@@ -24,6 +24,57 @@ const OrderItemSchema = new mongoose.Schema({
   total: {
     type: Number,
     required: true,
+  },
+});
+
+const CustomerDetailsSchema = new mongoose.Schema({
+  email: {
+    type: String,
+    required: true,
+  },
+  firstName: {
+    type: String,
+    required: true,
+  },
+  lastName: {
+    type: String,
+    required: true,
+  },
+  address: {
+    type: String,
+    required: true,
+  },
+  apartment: {
+    type: String,
+    default: "",
+  },
+  city: {
+    type: String,
+    required: true,
+  },
+  country: {
+    type: String,
+    default: "United States",
+  },
+  province: {
+    type: String,
+    default: "",
+  },
+  postalCode: {
+    type: String,
+    default: "",
+  },
+  phone: {
+    type: String,
+    required: true,
+  },
+  shippingMethod: {
+    type: String,
+    default: "cash_on_delivery",
+  },
+  discountCode: {
+    type: String,
+    default: "",
   },
 });
 
@@ -85,6 +136,25 @@ const ClientOrderSchema = new mongoose.Schema({
     type: String,
     default: "",
   },
+  // Store complete customer details
+  customer_details: CustomerDetailsSchema,
+
+  // Return and cancellation fields
+  return_requested_at: {
+    type: Date,
+  },
+  return_reason: {
+    type: String,
+    default: "",
+  },
+  cancelled_at: {
+    type: Date,
+  },
+  cancellation_reason: {
+    type: String,
+    default: "",
+  },
+
   placed_at: {
     type: Date,
     default: Date.now,

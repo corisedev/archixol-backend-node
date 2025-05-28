@@ -1,4 +1,4 @@
-// routes/clientRoutes.js
+// routes/clientRoutes.js (Updated with new order endpoints)
 const express = require("express");
 const router = express.Router();
 
@@ -20,6 +20,15 @@ const {
   cancelProject,
   completeProject,
 } = require("../controllers/clientController");
+
+// Import new order controllers
+const {
+  placeOrder,
+  getOrderDetails,
+  requestReturn,
+  cancelOrder,
+  getCheckoutDetails,
+} = require("../controllers/clientOrderController");
 
 // Import profile controllers
 const {
@@ -54,6 +63,15 @@ const {
   validateProposals,
   validateGetMyJobs,
 } = require("../utils/clientValidation");
+
+// Import order validation
+const {
+  validatePlaceOrder,
+  validateGetOrderDetails,
+  validateRequestReturn,
+  validateCancelOrder,
+  validate: validateOrder,
+} = require("../utils/clientOrderValidation");
 
 const {
   validateProposalAction,
@@ -120,7 +138,60 @@ router.post(
   createJob
 );
 
-// Orders routes
+// ==================== NEW ORDER ROUTES ====================
+
+// @desc    Get client details for checkout page
+// @route   GET /client/checkout_details
+// @access  Private (Client Only)
+router.get("/checkout_details", getCheckoutDetails);
+
+// @desc    Place a new order (checkout)
+// @route   POST /client/place_order
+// @access  Private (Client Only)
+router.post(
+  "/place_order",
+  decryptRequest,
+  validatePlaceOrder,
+  validateOrder,
+  placeOrder
+);
+
+// @desc    Get order details
+// @route   POST /client/get_order_details
+// @access  Private (Client Only)
+router.post(
+  "/get_order_details",
+  decryptRequest,
+  validateGetOrderDetails,
+  validateOrder,
+  getOrderDetails
+);
+
+// @desc    Request order return
+// @route   POST /client/request_return
+// @access  Private (Client Only)
+router.post(
+  "/request_return",
+  decryptRequest,
+  validateRequestReturn,
+  validateOrder,
+  requestReturn
+);
+
+// @desc    Cancel order
+// @route   POST /client/cancel_order
+// @access  Private (Client Only)
+router.post(
+  "/cancel_order",
+  decryptRequest,
+  validateCancelOrder,
+  validateOrder,
+  cancelOrder
+);
+
+// ==================== EXISTING ORDER ROUTES ====================
+
+// Orders routes (existing)
 router.get("/orders", getOrders);
 
 // Products routes
