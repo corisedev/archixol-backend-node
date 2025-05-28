@@ -1099,17 +1099,44 @@ exports.proposalAction = async (req, res) => {
         }
       });
 
-      // IMPORTANT: Update the corresponding Job record status
-      await Job.findOneAndUpdate(
-        {
+      // CRITICAL FIX: Find and update the corresponding Job record
+      const jobToUpdate = await Job.findOne({
+        service_provider: proposal.service_provider_id,
+        project_job: job_id,
+      });
+
+      if (jobToUpdate) {
+        console.log(`Found Job record to update: ${jobToUpdate._id}`);
+
+        // Update the job status and details
+        jobToUpdate.status = "accepted";
+        jobToUpdate.price = proposal.proposed_budget; // Update price to match proposal
+        jobToUpdate.delivery_date = new Date(
+          Date.now() + 30 * 24 * 60 * 60 * 1000
+        ); // 30 days from now
+        await jobToUpdate.save();
+
+        console.log(`Updated Job record ${jobToUpdate._id} status to accepted`);
+      } else {
+        console.error(
+          `No Job record found for service_provider: ${proposal.service_provider_id} and project_job: ${job_id}`
+        );
+
+        // FALLBACK: Create a Job record if it doesn't exist (shouldn't happen but safety net)
+        const newJob = await Job.create({
+          service: null, // Will be filled if service is provided
           service_provider: proposal.service_provider_id,
+          client: userId,
           project_job: job_id,
-        },
-        {
-          status: "accepted", // Update status to accepted
-          delivery_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // Set delivery date (30 days from now, adjust as needed)
-        }
-      );
+          status: "accepted",
+          price: proposal.proposed_budget,
+          payment_status: "pending",
+          requirements: proposal.proposal_text,
+          delivery_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        });
+
+        console.log(`Created new Job record: ${newJob._id}`);
+      }
 
       // Update other Job records for rejected proposals
       const rejectedProposals = projectJob.proposals.filter(
@@ -1117,15 +1144,16 @@ exports.proposalAction = async (req, res) => {
       );
 
       for (const rejectedProposal of rejectedProposals) {
-        await Job.findOneAndUpdate(
-          {
-            service_provider: rejectedProposal.service_provider_id,
-            project_job: job_id,
-          },
-          {
-            status: "rejected",
-          }
-        );
+        const rejectedJob = await Job.findOne({
+          service_provider: rejectedProposal.service_provider_id,
+          project_job: job_id,
+        });
+
+        if (rejectedJob) {
+          rejectedJob.status = "rejected";
+          await rejectedJob.save();
+          console.log(`Updated rejected Job record: ${rejectedJob._id}`);
+        }
       }
 
       // Update service provider's service statistics
@@ -1142,18 +1170,24 @@ exports.proposalAction = async (req, res) => {
       // Reject the proposal
       proposal.status = "rejected";
 
-      // IMPORTANT: Update the corresponding Job record status
-      await Job.findOneAndUpdate(
-        {
-          service_provider: proposal.service_provider_id,
-          project_job: job_id,
-        },
-        {
-          status: "rejected",
-        }
-      );
+      // CRITICAL FIX: Update the corresponding Job record status
+      const jobToReject = await Job.findOne({
+        service_provider: proposal.service_provider_id,
+        project_job: job_id,
+      });
+
+      if (jobToReject) {
+        jobToReject.status = "rejected";
+        await jobToReject.save();
+        console.log(`Updated Job record ${jobToReject._id} status to rejected`);
+      } else {
+        console.error(
+          `No Job record found to reject for service_provider: ${proposal.service_provider_id} and project_job: ${job_id}`
+        );
+      }
     }
 
+    // Save the project job with updated proposals
     await projectJob.save();
 
     // Get service provider details for notification

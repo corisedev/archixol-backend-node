@@ -393,6 +393,8 @@ exports.applyForJob = async (req, res) => {
 
     const userId = req.user.id;
 
+    console.log(`Service provider ${userId} applying for job ${job_id}`);
+
     // Validate required fields
     if (!job_id || !proposal_text || !proposed_budget || !proposed_timeline) {
       return res.status(400).json({
@@ -422,13 +424,24 @@ exports.applyForJob = async (req, res) => {
     // Check if service provider has already applied using Job model
     const existingApplication = await Job.findOne({
       service_provider: userId,
-      project_job: job_id, // Now this field exists in the schema
+      project_job: job_id,
     });
 
     if (existingApplication) {
       return res
         .status(400)
         .json({ error: "You have already applied for this job" });
+    }
+
+    // ALSO check if user already has a proposal in the ProjectJob
+    const existingProposal = projectJob.proposals.find(
+      (proposal) => proposal.service_provider_id.toString() === userId
+    );
+
+    if (existingProposal) {
+      return res
+        .status(400)
+        .json({ error: "You have already submitted a proposal for this job" });
     }
 
     // Validate service if provided
@@ -446,8 +459,11 @@ exports.applyForJob = async (req, res) => {
       const jobCategory = projectJob.category?.toLowerCase().trim();
 
       if (jobCategory && serviceCategory !== jobCategory) {
+        console.log(
+          `Category mismatch: Service(${serviceCategory}) vs Job(${jobCategory})`
+        );
         return res.status(400).json({
-          error: "Your service category doesn't match this job category",
+          error: `Your service category (${serviceCategory}) doesn't match this job category (${jobCategory})`,
         });
       }
     }
@@ -459,7 +475,9 @@ exports.applyForJob = async (req, res) => {
         .json({ error: "Proposed budget must be greater than 0" });
     }
 
-    // Create proposal in ProjectJob
+    console.log("Creating proposal and job application...");
+
+    // STEP 1: Create proposal in ProjectJob
     const proposal = {
       service_provider_id: userId,
       proposal_text,
@@ -472,42 +490,70 @@ exports.applyForJob = async (req, res) => {
     projectJob.proposals.push(proposal);
     await projectJob.save();
 
-    // Create job application in Job model with project_job reference
+    console.log(`Added proposal to ProjectJob ${job_id}`);
+
+    // STEP 2: Create job application in Job model with project_job reference
     const jobApplication = await Job.create({
       service: service ? service._id : null,
       service_provider: userId,
       client: projectJob.client_id,
-      project_job: projectJob._id, // SET THE PROJECT_JOB REFERENCE
-      status: "requested",
+      project_job: projectJob._id, // CRITICAL: Set the project_job reference
+      status: "requested", // Initial status
       price: Number(proposed_budget),
       payment_status: "pending",
       requirements: proposal_text,
       delivery_date: null, // Will be set if job is accepted
     });
 
-    // Update service statistics if service is provided
+    console.log(`Created Job application record: ${jobApplication._id}`);
+
+    // STEP 3: Update service statistics if service is provided
     if (service) {
       service.total_job_requests += 1;
       await service.save();
+      console.log(`Updated service ${service._id} statistics`);
     }
+
+    // STEP 4: Verify the application was created correctly
+    const verifyApplication = await Job.findById(jobApplication._id)
+      .populate("project_job")
+      .populate("client", "username")
+      .populate("service", "service_title");
+
+    console.log("Application verification:", {
+      applicationId: verifyApplication._id,
+      projectJobLinked: !!verifyApplication.project_job,
+      clientLinked: !!verifyApplication.client,
+      serviceLinked: !!verifyApplication.service,
+      projectJobTitle: verifyApplication.project_job?.title,
+    });
 
     const responseData = {
       message: "Job application submitted successfully",
       application: {
         id: jobApplication._id,
         job_id: projectJob._id,
+        job_title: projectJob.title,
         status: jobApplication.status,
         proposed_budget: Number(proposed_budget),
         proposed_timeline,
         applied_at: jobApplication.createdAt,
+        client_name: verifyApplication.client?.username,
+        service_title: verifyApplication.service?.service_title,
+      },
+      debug_info: {
+        project_job_linked: !!verifyApplication.project_job,
+        proposal_count: projectJob.proposals.length,
       },
     };
+
+    console.log(`Job application completed successfully for user ${userId}`);
 
     const encryptedData = encryptData(responseData);
     res.status(201).json({ data: encryptedData });
   } catch (err) {
     console.error("Error in applyForJob:", err);
-    res.status(500).json({ error: "Server error" });
+    res.status(500).json({ error: "Server error: " + err.message });
   }
 };
 
@@ -519,36 +565,48 @@ exports.getMyApplications = async (req, res) => {
     const userId = req.user.id;
     const { status, page = 1, limit = 10 } = req.query;
 
-    // Build query
+    console.log(`Getting applications for service provider: ${userId}`);
+
+    // FIRST METHOD: Get applications from Job model with project_job populated
     let query = { service_provider: userId };
-    if (status) {
+
+    // Add status filter if provided
+    if (status && status !== "all") {
       query.status = status;
     }
 
-    // Get applications with pagination (without populating project_job since it doesn't exist in schema)
-    const skip = (page - 1) * limit;
+    console.log("Query for Job model:", query);
+
+    // Get applications with populated fields - THIS IS THE KEY FIX
     const applications = await Job.find(query)
       .populate("client", "username email user_type")
       .populate("service", "service_title service_category")
+      .populate("project_job") // POPULATE the project job reference
       .sort({ createdAt: -1 })
-      .skip(skip)
+      .skip((page - 1) * limit)
       .limit(parseInt(limit));
+
+    console.log(`Found ${applications.length} applications from Job model`);
 
     const totalApplications = await Job.countDocuments(query);
 
-    // Get project job details separately if needed
-    const applicationIds = applications.map((app) => app._id);
-
-    // Find corresponding project jobs by looking at proposals
-    const projectJobs = await ProjectJob.find({
+    // SECOND METHOD: Get applications from ProjectJob proposals (as backup/verification)
+    const projectJobsWithUserProposals = await ProjectJob.find({
       "proposals.service_provider_id": userId,
     })
-      .select("title description budget timeline city status proposals")
+      .populate("client_id", "username email user_type")
+      .select(
+        "title description budget timeline city status proposals createdAt"
+      )
       .lean();
 
-    // Create a map of project jobs by finding matching proposals
+    console.log(
+      `Found ${projectJobsWithUserProposals.length} project jobs with user proposals`
+    );
+
+    // Create a map of project jobs for reference
     const projectJobMap = {};
-    projectJobs.forEach((pj) => {
+    projectJobsWithUserProposals.forEach((pj) => {
       const userProposal = pj.proposals.find(
         (p) => p.service_provider_id.toString() === userId
       );
@@ -560,63 +618,191 @@ exports.getMyApplications = async (req, res) => {
       }
     });
 
-    // Format applications
+    // Format applications with proper project job details
     const formattedApplications = applications.map((app) => {
       const appObj = app.toObject();
       appObj.id = appObj._id;
       delete appObj._id;
 
-      // Try to find matching project job by looking through our map
-      // This is a best-effort approach since there's no direct relationship
-      const matchingProjectJob = Object.values(projectJobMap).find((pj) => {
-        // You might need to adjust this matching logic based on your business rules
-        // For now, we'll try to match by budget and timeline if available
-        return (
-          pj.budget === app.price ||
-          pj.user_proposal?.proposed_budget === app.price
-        );
-      });
+      // If project_job is populated from Job model, use it
+      if (app.project_job && typeof app.project_job === "object") {
+        console.log(`Using populated project_job for application ${app._id}`);
 
-      if (matchingProjectJob) {
         appObj.project_job = {
-          id: matchingProjectJob._id,
-          title: matchingProjectJob.title,
-          description: matchingProjectJob.description,
-          budget: matchingProjectJob.budget,
-          timeline: matchingProjectJob.timeline,
-          city: matchingProjectJob.city,
-          status: matchingProjectJob.status,
-          proposal_status:
-            matchingProjectJob.user_proposal?.status || "pending",
+          id: app.project_job._id,
+          title: app.project_job.title || "Project Title",
+          description:
+            app.project_job.description || "No description available",
+          budget: app.project_job.budget || app.price,
+          timeline: app.project_job.timeline || "Not specified",
+          city: app.project_job.city || "Not specified",
+          status: app.project_job.status || "unknown",
+          category: app.project_job.category || "general",
+          urgent: app.project_job.urgent || false,
+          created_at: app.project_job.createdAt,
         };
+
+        // Get proposal status from the ProjectJob proposals array
+        if (
+          app.project_job.proposals &&
+          Array.isArray(app.project_job.proposals)
+        ) {
+          const userProposal = app.project_job.proposals.find(
+            (p) =>
+              p.service_provider_id &&
+              p.service_provider_id.toString() === userId
+          );
+          if (userProposal) {
+            appObj.project_job.proposal_status = userProposal.status;
+            appObj.project_job.proposed_budget = userProposal.proposed_budget;
+            appObj.project_job.proposed_timeline =
+              userProposal.proposed_timeline;
+            appObj.project_job.proposal_submitted_at =
+              userProposal.submitted_at;
+          }
+        }
+      }
+      // Fallback: Try to match with project jobs from our map
+      else if (app.project_job) {
+        const projectJobId = app.project_job.toString();
+        const matchingProjectJob = projectJobMap[projectJobId];
+
+        if (matchingProjectJob) {
+          console.log(
+            `Using fallback project_job data for application ${app._id}`
+          );
+
+          appObj.project_job = {
+            id: matchingProjectJob._id,
+            title: matchingProjectJob.title,
+            description: matchingProjectJob.description,
+            budget: matchingProjectJob.budget,
+            timeline: matchingProjectJob.timeline,
+            city: matchingProjectJob.city,
+            status: matchingProjectJob.status,
+            category: matchingProjectJob.category,
+            urgent: matchingProjectJob.urgent,
+            created_at: matchingProjectJob.createdAt,
+            proposal_status:
+              matchingProjectJob.user_proposal?.status || "pending",
+            proposed_budget: matchingProjectJob.user_proposal?.proposed_budget,
+            proposed_timeline:
+              matchingProjectJob.user_proposal?.proposed_timeline,
+            proposal_submitted_at:
+              matchingProjectJob.user_proposal?.submitted_at,
+          };
+        } else {
+          console.log(`No project job data found for application ${app._id}`);
+          // Create minimal project job object
+          appObj.project_job = {
+            id: app.project_job,
+            title: "Project Details Not Available",
+            description: app.requirements || "No description available",
+            budget: app.price,
+            timeline: "Not specified",
+            city: "Not specified",
+            status: "unknown",
+            category: "general",
+            urgent: false,
+            proposal_status: "unknown",
+          };
+        }
       } else {
-        // If no matching project job found, create a minimal object
+        // No project_job reference at all
+        console.log(`No project_job reference for application ${app._id}`);
         appObj.project_job = {
-          title: "Job Details Not Available",
+          title: "Legacy Application",
           description: app.requirements || "No description available",
           budget: app.price,
           timeline: "Not specified",
           city: "Not specified",
           status: "unknown",
+          category: "general",
+          urgent: false,
+          proposal_status: "unknown",
+        };
+      }
+
+      // Add application timeline information
+      appObj.application_timeline = {
+        applied_at: app.createdAt,
+        updated_at: app.updatedAt,
+        delivery_date: app.delivery_date,
+        completed_date: app.completed_date,
+      };
+
+      // Add client information
+      if (app.client) {
+        appObj.client_info = {
+          id: app.client._id,
+          username: app.client.username,
+          email: app.client.email,
+          user_type: app.client.user_type,
+        };
+      }
+
+      // Add service information
+      if (app.service) {
+        appObj.service_info = {
+          id: app.service._id,
+          title: app.service.service_title,
+          category: app.service.service_category,
         };
       }
 
       return appObj;
     });
 
-    // Calculate statistics
+    // Calculate comprehensive statistics
+    const allUserApplications = await Job.find({ service_provider: userId });
+
     const stats = {
       total_applications: totalApplications,
-      pending: applications.filter((app) => app.status === "requested").length,
-      accepted: applications.filter((app) => app.status === "accepted").length,
-      in_progress: applications.filter((app) => app.status === "in_progress")
+      // Status breakdown
+      pending: allUserApplications.filter((app) => app.status === "requested")
         .length,
-      completed: applications.filter((app) => app.status === "completed")
+      accepted: allUserApplications.filter((app) => app.status === "accepted")
         .length,
-      rejected: applications.filter((app) => app.status === "rejected").length,
-      cancelled: applications.filter((app) => app.status === "cancelled")
+      in_progress: allUserApplications.filter(
+        (app) => app.status === "in_progress"
+      ).length,
+      completed: allUserApplications.filter((app) => app.status === "completed")
         .length,
+      rejected: allUserApplications.filter((app) => app.status === "rejected")
+        .length,
+      cancelled: allUserApplications.filter((app) => app.status === "cancelled")
+        .length,
+
+      // Additional stats
+      success_rate:
+        allUserApplications.length > 0
+          ? Math.round(
+              (allUserApplications.filter((app) =>
+                ["accepted", "completed"].includes(app.status)
+              ).length /
+                allUserApplications.length) *
+                100
+            )
+          : 0,
+
+      total_earnings: allUserApplications
+        .filter(
+          (app) => app.status === "completed" && app.payment_status === "paid"
+        )
+        .reduce((sum, app) => sum + (app.price || 0), 0),
+
+      average_project_value:
+        allUserApplications.length > 0
+          ? Math.round(
+              allUserApplications.reduce(
+                (sum, app) => sum + (app.price || 0),
+                0
+              ) / allUserApplications.length
+            )
+          : 0,
     };
+
+    console.log("Application statistics:", stats);
 
     const responseData = {
       message: "Applications retrieved successfully",
@@ -628,7 +814,17 @@ exports.getMyApplications = async (req, res) => {
         total_applications: totalApplications,
         per_page: parseInt(limit),
       },
+      debug_info: {
+        query_used: query,
+        job_model_count: applications.length,
+        project_job_model_count: projectJobsWithUserProposals.length,
+        user_id: userId,
+      },
     };
+
+    console.log(
+      `Returning ${formattedApplications.length} formatted applications`
+    );
 
     const encryptedData = encryptData(responseData);
     res.status(200).json({ data: encryptedData });
@@ -637,6 +833,7 @@ exports.getMyApplications = async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 };
+
 // @desc    Update job application (withdraw, update proposal, etc.)
 // @route   POST /service/update_application
 // @access  Private (Service Provider Only)
