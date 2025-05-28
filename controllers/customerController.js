@@ -1,6 +1,7 @@
-// controllers/customerController.js
+// controllers/customerController.js (Updated to include ClientOrders)
 const Customer = require("../models/Customer");
 const Order = require("../models/Order");
+const ClientOrder = require("../models/ClientOrder"); // Add this import
 const { encryptData } = require("../utils/encryptResponse");
 
 // @desc    Get all customers
@@ -37,7 +38,7 @@ exports.getAllCustomers = async (req, res) => {
   }
 };
 
-// @desc    Get customer by ID
+// @desc    Get customer by ID (Updated to include ClientOrders)
 // @route   POST /supplier/get_customer
 // @access  Private (Supplier Only)
 exports.getCustomer = async (req, res) => {
@@ -60,14 +61,21 @@ exports.getCustomer = async (req, res) => {
       return res.status(404).json({ error: "Customer not found" });
     }
 
-    // Get customer's orders
-    const orders = await Order.find({
+    // Get customer's legacy orders
+    const legacyOrders = await Order.find({
       supplier_id: userId,
       customer_id: customer_id,
     }).sort({ createdAt: -1 });
 
-    // Format orders for response
-    const formattedOrders = orders.map((order) => ({
+    // Get customer's client orders (orders placed by client through the new system)
+    // We need to match by email since client orders don't directly reference customer_id
+    const clientOrders = await ClientOrder.find({
+      supplier_id: userId,
+      "customer_details.email": customer.email,
+    }).sort({ placed_at: -1 });
+
+    // Format legacy orders
+    const formattedLegacyOrders = legacyOrders.map((order) => ({
       order_id: order._id,
       order_no: order.order_no,
       product: order.products,
@@ -79,13 +87,72 @@ exports.getCustomer = async (req, res) => {
       created_at: order.createdAt,
       fulfillment_status: order.fulfillment_status,
       payment_status: order.payment_status,
+      order_type: "legacy", // Add order type identifier
     }));
+
+    // Format client orders to match the same structure
+    const formattedClientOrders = clientOrders.map((order) => ({
+      order_id: order._id,
+      order_no: order.order_no,
+      product: order.items.map((item) => ({
+        id: item.product_id,
+        title: item.title,
+        price: item.price,
+        qty: item.quantity,
+        total: item.total,
+      })),
+      sub_total: order.subtotal,
+      add_discount: 0, // Client orders don't have discount structure like legacy orders
+      extimated_tax: order.tax,
+      total: order.total,
+      notes: order.notes,
+      created_at: order.placed_at,
+      fulfillment_status:
+        order.status === "delivered" || order.status === "completed",
+      payment_status: order.payment_status === "paid",
+      order_type: "client", // Add order type identifier
+      // Additional client order specific fields
+      shipping: order.shipping,
+      status: order.status,
+      customer_details: order.customer_details,
+    }));
+
+    // Combine both order types and sort by date (newest first)
+    const allOrders = [...formattedLegacyOrders, ...formattedClientOrders].sort(
+      (a, b) => new Date(b.created_at) - new Date(a.created_at)
+    );
+
+    // Calculate updated statistics based on all orders
+    const totalOrderValue = allOrders.reduce(
+      (sum, order) => sum + (order.total || 0),
+      0
+    );
+    const totalOrderCount = allOrders.length;
+
+    // Update customer statistics if they differ from database
+    if (
+      Math.abs(customer.amount_spent - totalOrderValue) > 0.01 ||
+      customer.orders_count !== totalOrderCount
+    ) {
+      customer.amount_spent = totalOrderValue;
+      customer.orders_count = totalOrderCount;
+      await customer.save();
+    }
 
     // Format customer for response
     const customerObj = customer.toObject();
     customerObj.id = customerObj._id;
     delete customerObj._id;
-    customerObj.orders = formattedOrders;
+    customerObj.orders = allOrders;
+
+    // Add summary statistics
+    customerObj.order_summary = {
+      total_orders: totalOrderCount,
+      legacy_orders: formattedLegacyOrders.length,
+      client_orders: formattedClientOrders.length,
+      total_spent: totalOrderValue,
+      last_order_date: allOrders.length > 0 ? allOrders[0].created_at : null,
+    };
 
     const responseData = {
       message: "Customer retrieved successfully",
@@ -226,14 +293,19 @@ exports.updateCustomer = async (req, res) => {
 
     await customer.save();
 
-    // Get customer's orders
-    const orders = await Order.find({
+    // Get customer's orders (both legacy and client orders) for response
+    const legacyOrders = await Order.find({
       supplier_id: userId,
       customer_id: customer_id,
     }).sort({ createdAt: -1 });
 
-    // Format orders for response
-    const formattedOrders = orders.map((order) => ({
+    const clientOrders = await ClientOrder.find({
+      supplier_id: userId,
+      "customer_details.email": customer.email,
+    }).sort({ placed_at: -1 });
+
+    // Format orders for response (same as in getCustomer)
+    const formattedLegacyOrders = legacyOrders.map((order) => ({
       order_id: order._id,
       order_no: order.order_no,
       product: order.products,
@@ -243,13 +315,37 @@ exports.updateCustomer = async (req, res) => {
       total: order.calculations.total,
       notes: order.notes,
       created_at: order.createdAt,
+      order_type: "legacy",
     }));
+
+    const formattedClientOrders = clientOrders.map((order) => ({
+      order_id: order._id,
+      order_no: order.order_no,
+      product: order.items.map((item) => ({
+        id: item.product_id,
+        title: item.title,
+        price: item.price,
+        qty: item.quantity,
+        total: item.total,
+      })),
+      sub_total: order.subtotal,
+      add_discount: 0,
+      extimated_tax: order.tax,
+      total: order.total,
+      notes: order.notes,
+      created_at: order.placed_at,
+      order_type: "client",
+    }));
+
+    const allOrders = [...formattedLegacyOrders, ...formattedClientOrders].sort(
+      (a, b) => new Date(b.created_at) - new Date(a.created_at)
+    );
 
     // Format customer for response
     const customerObj = customer.toObject();
     customerObj.id = customerObj._id;
     delete customerObj._id;
-    customerObj.orders = formattedOrders;
+    customerObj.orders = allOrders;
 
     const responseData = {
       message: "Customer updated successfully",

@@ -1,9 +1,11 @@
-// controllers/supplierController.js
+// controllers/supplierController.js (Updated to include ClientOrders)
 const User = require("../models/User");
 const SupplierStore = require("../models/SupplierStore");
 const { encryptData } = require("../utils/encryptResponse");
 const Product = require("../models/Product");
 const Order = require("../models/Order");
+const ClientOrder = require("../models/ClientOrder"); // Add this import
+const Customer = require("../models/Customer");
 
 // @desc    Get supplier global data
 // @route   GET /supplier/global_data
@@ -146,7 +148,7 @@ exports.updateGlobalData = async (req, res) => {
   }
 };
 
-// @desc    Get supplier dashboard data
+// @desc    Get supplier dashboard data (Updated to include ClientOrders)
 // @route   GET /supplier/dashboard
 // @access  Private (Supplier Only)
 exports.getDashboardData = async (req, res) => {
@@ -166,37 +168,64 @@ exports.getDashboardData = async (req, res) => {
         .json({ error: "Access denied. User is not a supplier" });
     }
 
-    // Get all orders
-    const orders = await Order.find({ supplier_id: userId });
+    // Get all legacy orders
+    const legacyOrders = await Order.find({ supplier_id: userId });
+
+    // Get all client orders (new orders)
+    const clientOrders = await ClientOrder.find({ supplier_id: userId });
+
+    // Combine both order types
+    const allOrders = [
+      ...legacyOrders.map((order) => ({
+        ...order.toObject(),
+        order_type: "legacy",
+        total: order.calculations?.total || 0,
+        status: order.status,
+        createdAt: order.createdAt,
+      })),
+      ...clientOrders.map((order) => ({
+        ...order.toObject(),
+        order_type: "client",
+        total: order.total,
+        status: order.status,
+        createdAt: order.placed_at,
+      })),
+    ];
 
     // Filter for completed/delivered orders for sales calculations
-    const completedOrders = orders.filter(
+    const completedOrders = allOrders.filter(
       (order) => order.status === "completed" || order.status === "delivered"
     );
 
     // Get total sales from only completed/delivered orders
     const totalSale = completedOrders.reduce((acc, order) => {
-      if (order.calculations && typeof order.calculations.total === "number") {
-        return acc + order.calculations.total;
-      }
-      return acc;
+      return acc + (order.total || 0);
     }, 0);
 
     // Get order count (all orders)
-    const ordersCount = orders.length;
+    const ordersCount = allOrders.length;
 
-    // Get total unique clients
-    const uniqueClients = [
-      ...new Set(
-        orders
-          .filter((order) => order.customer_id)
-          .map((order) => order.customer_id.toString())
-      ),
-    ];
-    const totalClients = uniqueClients.length;
+    // Get total unique clients from both order types
+    const uniqueClients = new Set();
+
+    // Add clients from legacy orders
+    legacyOrders.forEach((order) => {
+      if (order.customer_id) {
+        uniqueClients.add(order.customer_id.toString());
+      }
+    });
+
+    // Add clients from client orders
+    clientOrders.forEach((order) => {
+      if (order.client_id) {
+        uniqueClients.add(order.client_id.toString());
+      }
+    });
+
+    const totalClients = uniqueClients.size;
 
     // Get unfulfilled orders (pending/processing/returned)
-    const unfulfilledOrders = orders.filter(
+    const unfulfilledOrders = allOrders.filter(
       (order) =>
         order.status === "pending" ||
         order.status === "processing" ||
@@ -218,7 +247,7 @@ exports.getDashboardData = async (req, res) => {
         min_qty: product.min_qty,
       }));
 
-    // Calculate monthly sales data (last 6 months)
+    // Calculate monthly sales data (last 6 months) - Updated to include both order types
     const monthNames = [
       "January",
       "February",
@@ -253,21 +282,15 @@ exports.getDashboardData = async (req, res) => {
         59
       );
 
-      // Find completed/delivered orders for this month
+      // Find completed/delivered orders for this month from both order types
       const monthlyOrders = completedOrders.filter((order) => {
         const orderDate = new Date(order.createdAt);
         return orderDate >= startOfMonth && orderDate <= endOfMonth;
       });
 
-      // Calculate total sales for this month from completed/delivered orders
+      // Calculate total sales for this month
       const monthlySales = monthlyOrders.reduce((acc, order) => {
-        if (
-          order.calculations &&
-          typeof order.calculations.total === "number"
-        ) {
-          return acc + order.calculations.total;
-        }
-        return acc;
+        return acc + (order.total || 0);
       }, 0);
 
       // Add month to the data
@@ -288,6 +311,12 @@ exports.getDashboardData = async (req, res) => {
         product_stock: lowStockProducts,
         orders_unfullfilled: unfulfilledOrders,
         sales_data: salesData,
+        // Additional info about order types
+        order_breakdown: {
+          legacy_orders: legacyOrders.length,
+          client_orders: clientOrders.length,
+          total_orders: ordersCount,
+        },
       },
     };
 
