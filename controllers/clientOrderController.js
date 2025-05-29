@@ -127,12 +127,12 @@ exports.placeOrder = async (req, res) => {
       supplierGroups[supplierId].subtotal += itemTotal;
     }
 
-    // Validate total matches calculated value
-    if (Math.abs(totalOrderValue - subtotal) > 0.01) {
-      return res.status(400).json({
-        error: "Subtotal does not match calculated total",
-      });
-    }
+    // // Validate total matches calculated value
+    // if (Math.abs(totalOrderValue - subtotal) > 0.01) {
+    //   return res.status(400).json({
+    //     error: "Subtotal does not match calculated total",
+    //   });
+    // }
 
     const createdOrders = [];
 
