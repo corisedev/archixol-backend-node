@@ -7,7 +7,7 @@ const notificationService = require("./notificationService");
 const notifyProjectCreated = async (clientId, projectTitle, projectId) => {
   return await notificationService.sendProjectNotification({
     recipient: clientId,
-    sender: null,
+    sender: clientId,
     projectTitle,
     action: "created",
     projectId,

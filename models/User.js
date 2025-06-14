@@ -59,7 +59,6 @@ const UserSchema = new mongoose.Schema({
   },
   adminRole: {
     type: String,
-    enum: ["admin", "super_admin", "moderator"],
     default: null,
   },
   adminPermissions: {

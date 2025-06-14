@@ -25,12 +25,12 @@ router.get("/dashboard", getAdminDashboard);
 router.get("/get_orders", getAdminOrders);
 
 // Admin Order Details Route
-router.get("/get_order_details", getOrderDetails);
+router.post("/get_order_details", decryptRequest, getOrderDetails);
 
 // Admin Products Routes
 router.get("/get_products", getAdminProducts);
 
 // Admin Product Details Route
-router.get("/get_product_details", getAdminProductDetails);
+router.post("/get_product_details", decryptRequest, getAdminProductDetails);
 
 module.exports = router;

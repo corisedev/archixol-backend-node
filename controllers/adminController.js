@@ -3,6 +3,7 @@ const User = require("../models/User");
 const Order = require("../models/Order");
 const ClientOrder = require("../models/ClientOrder");
 const Customer = require("../models/Customer");
+const Product = require("../models/Product");
 const Service = require("../models/Service");
 const ProjectJob = require("../models/ProjectJob");
 const { encryptData } = require("../utils/encryptResponse");
@@ -718,11 +719,11 @@ exports.getAdminOrders = async (req, res) => {
 };
 
 // @desc    Get order details for admin
-// @route   GET /admin/get_order_details
+// @route   POST /admin/get_order_details
 // @access  Private (Admin Only)
 exports.getOrderDetails = async (req, res) => {
   try {
-    const { order_no } = req.query;
+    const { order_no } = req.body;
 
     if (!order_no) {
       return res.status(400).json({ error: "Order number is required" });
@@ -1080,11 +1081,11 @@ exports.getAdminProducts = async (req, res) => {
 };
 
 // @desc    Get product details for admin
-// @route   GET /admin/get_product_details
+// @route   POST /admin/get_product_details
 // @access  Private (Admin Only)
 exports.getAdminProductDetails = async (req, res) => {
   try {
-    const { product_id } = req.query;
+    const { product_id } = req.body;
 
     if (!product_id) {
       return res.status(400).json({ error: "Product ID is required" });

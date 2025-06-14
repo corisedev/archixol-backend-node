@@ -8,6 +8,7 @@ const Customer = require("../models/Customer");
 const Service = require("../models/Service");
 const UserProfile = require("../models/UserProfile");
 const { encryptData } = require("../utils/encryptResponse");
+const { notify, notificationService } = require("../utils/notificationHelpers");
 
 // @desc    Get client dashboard data
 // @route   GET /client/dashboard
@@ -216,6 +217,16 @@ exports.createJob = async (req, res) => {
     });
 
     console.log("Job created successfully with ID:", projectJob._id);
+    await notify.broadcast.toAll({
+      type: "system",
+      title: "System Maintenance",
+      message:
+        "The system will be down for maintenance from 2:00 AM to 4:00 AM",
+      data: {
+        maintenanceStart: "2023-12-01T02:00:00Z",
+        maintenanceEnd: "2023-12-01T04:00:00Z",
+      },
+    });
 
     const responseData = {
       message: "Job created successfully",
