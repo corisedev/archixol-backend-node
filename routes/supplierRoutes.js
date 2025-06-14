@@ -82,6 +82,33 @@ const {
   markAsReceived,
 } = require("../controllers/purchaseOrderController");
 
+// Import discount controllers - FIXED NAMING
+const {
+  addDiscount,
+  getDiscounts,
+  getDiscount,
+  updateDiscount,
+  deleteDiscount,
+  toggleDiscountStatus,
+  validateDiscountCode: validateDiscountCodeController, // RENAMED TO AVOID CONFLICT
+  applyDiscount,
+  getDiscountUsageReport,
+  getAutomaticDiscounts,
+} = require("../controllers/discountController");
+
+// Import discount validation
+const {
+  validateAddDiscount,
+  validateGetDiscount,
+  validateUpdateDiscount,
+  validateDeleteDiscount,
+  validateToggleDiscountStatus,
+  validateDiscountCode: validateDiscountCodeValidation, // RENAMED TO AVOID CONFLICT
+  validate: validateDiscount,
+  validateApplyDiscount,
+  validateDiscountUsageReport,
+} = require("../utils/discountValidation");
+
 const { getInventory } = require("../controllers/inventoryController");
 const { generateReport } = require("../controllers/reportController");
 
@@ -184,5 +211,74 @@ router.post("/delete_file", decryptRequest, deleteFiles);
 router.get("/get_inventory", getInventory);
 
 router.post("/generate_report", decryptRequest, generateReport);
+
+// DISCOUNT ROUTES - FIXED
+router.post(
+  "/add_discount",
+  decryptRequest,
+  validateAddDiscount,
+  validateDiscount,
+  addDiscount
+);
+
+router.get("/get_discounts", getDiscounts);
+
+router.post(
+  "/get_discount",
+  decryptRequest,
+  validateGetDiscount,
+  validateDiscount,
+  getDiscount
+);
+
+router.post(
+  "/update_discount",
+  decryptRequest,
+  validateUpdateDiscount,
+  validateDiscount,
+  updateDiscount
+);
+
+router.post(
+  "/delete_discount",
+  decryptRequest,
+  validateDeleteDiscount,
+  validateDiscount,
+  deleteDiscount
+);
+
+router.post(
+  "/toggle_discount_status",
+  decryptRequest,
+  validateToggleDiscountStatus,
+  validateDiscount,
+  toggleDiscountStatus
+);
+
+router.post(
+  "/validate_discount_code",
+  decryptRequest,
+  validateDiscountCodeValidation, // FIXED: Using validation function
+  validateDiscount,
+  validateDiscountCodeController // FIXED: Using controller function
+);
+
+router.post(
+  "/apply_discount",
+  decryptRequest,
+  validateApplyDiscount,
+  validateDiscount,
+  applyDiscount
+);
+
+router.post(
+  "/discount_usage_report",
+  decryptRequest,
+  validateDiscountUsageReport,
+  validateDiscount,
+  getDiscountUsageReport
+);
+
+router.get("/get_automatic_discounts", getAutomaticDiscounts);
 
 module.exports = router;

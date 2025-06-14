@@ -49,6 +49,24 @@ const UserSchema = new mongoose.Schema({
     type: String,
     default: "DefaultTemplate",
   },
+  isAdmin: {
+    type: Boolean,
+    default: false,
+  },
+  isSuperAdmin: {
+    type: Boolean,
+    default: false,
+  },
+  adminRole: {
+    type: String,
+    enum: ["admin", "super_admin", "moderator"],
+    default: null,
+  },
+  adminPermissions: {
+    type: [String],
+    default: [],
+    // Example permissions: ['manage_users', 'view_analytics', 'manage_orders', 'manage_content']
+  },
   emailVerificationToken: String,
   emailVerificationExpire: Date,
   resetPasswordToken: String,
