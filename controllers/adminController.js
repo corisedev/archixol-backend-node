@@ -923,3 +923,238 @@ exports.getOrderDetails = async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 };
+
+// @desc    Get admin products data
+// @route   GET /admin/get_products
+// @access  Private (Admin Only)
+exports.getAdminProducts = async (req, res) => {
+  try {
+    const dateRanges = getDateRanges();
+    const {
+      currentMonthStart,
+      currentMonthEnd,
+      previousMonthStart,
+      previousMonthEnd,
+    } = dateRanges;
+
+    // 1. Total Products
+    const totalProductsCurrentMonth = await Product.countDocuments({
+      createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
+    });
+    const totalProductsPreviousMonth = await Product.countDocuments({
+      createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
+    });
+    const totalProductsOverall = await Product.countDocuments({});
+
+    // 2. Active Products
+    const activeProductsCurrentMonth = await Product.countDocuments({
+      status: "active",
+      createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
+    });
+    const activeProductsPreviousMonth = await Product.countDocuments({
+      status: "active",
+      createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
+    });
+    const activeProductsOverall = await Product.countDocuments({
+      status: "active",
+    });
+
+    // 3. Draft Products
+    const draftProductsCurrentMonth = await Product.countDocuments({
+      status: "draft",
+      createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
+    });
+    const draftProductsPreviousMonth = await Product.countDocuments({
+      status: "draft",
+      createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
+    });
+    const draftProductsOverall = await Product.countDocuments({
+      status: "draft",
+    });
+
+    // 4. Out of Stock Products (track_quantity = true and quantity <= min_qty)
+    const outOfStockProductsCurrentMonth = await Product.countDocuments({
+      track_quantity: true,
+      $expr: { $lte: ["$quantity", "$min_qty"] },
+      createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
+    });
+    const outOfStockProductsPreviousMonth = await Product.countDocuments({
+      track_quantity: true,
+      $expr: { $lte: ["$quantity", "$min_qty"] },
+      createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
+    });
+    const outOfStockProductsOverall = await Product.countDocuments({
+      track_quantity: true,
+      $expr: { $lte: ["$quantity", "$min_qty"] },
+    });
+
+    // Get all products with supplier details for the products list
+    const products = await Product.find({})
+      .populate("supplier_id", "username email")
+      .sort({ createdAt: -1 })
+      .limit(100);
+
+    // Format products according to specification
+    const formattedProducts = products.map((product) => ({
+      product_id: product._id.toString(),
+      title: product.title || "Untitled Product",
+      category: product.category || "Uncategorized",
+      stock: product.track_quantity ? product.quantity : null,
+      price: product.price || 0,
+      date: product.createdAt.toISOString(),
+      status: product.status || "draft",
+    }));
+
+    // Build stats object with labels
+    const stats = {
+      total_products: {
+        label: "Total Products",
+        value: totalProductsOverall,
+        trendingValue: calculateTrending(
+          totalProductsCurrentMonth,
+          totalProductsPreviousMonth
+        ),
+        isTrending: isTrendingPositive(
+          calculateTrending(
+            totalProductsCurrentMonth,
+            totalProductsPreviousMonth
+          )
+        ),
+      },
+      active_products: {
+        label: "Active Products",
+        value: activeProductsOverall,
+        trendingValue: calculateTrending(
+          activeProductsCurrentMonth,
+          activeProductsPreviousMonth
+        ),
+        isTrending: isTrendingPositive(
+          calculateTrending(
+            activeProductsCurrentMonth,
+            activeProductsPreviousMonth
+          )
+        ),
+      },
+      draft_products: {
+        label: "Draft Products",
+        value: draftProductsOverall,
+        trendingValue: calculateTrending(
+          draftProductsCurrentMonth,
+          draftProductsPreviousMonth
+        ),
+        isTrending: isTrendingPositive(
+          calculateTrending(
+            draftProductsCurrentMonth,
+            draftProductsPreviousMonth
+          )
+        ),
+      },
+      out_of_stock: {
+        label: "Out of Stock",
+        value: outOfStockProductsOverall,
+        trendingValue: calculateTrending(
+          outOfStockProductsCurrentMonth,
+          outOfStockProductsPreviousMonth
+        ),
+        isTrending: isTrendingPositive(
+          calculateTrending(
+            outOfStockProductsCurrentMonth,
+            outOfStockProductsPreviousMonth
+          )
+        ),
+      },
+    };
+
+    const responseData = {
+      message: "Admin products data retrieved successfully",
+      stats,
+      products: formattedProducts,
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error getting admin products data:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Get product details for admin
+// @route   GET /admin/get_product_details
+// @access  Private (Admin Only)
+exports.getAdminProductDetails = async (req, res) => {
+  try {
+    const { product_id } = req.query;
+
+    if (!product_id) {
+      return res.status(400).json({ error: "Product ID is required" });
+    }
+
+    // Find the product with supplier and collection details
+    const product = await Product.findById(product_id)
+      .populate("supplier_id", "username email")
+      .populate("search_collection", "title");
+
+    if (!product) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    // Calculate inventory metrics
+    const available = product.track_quantity ? product.quantity : null;
+    const committed = 0; // You may need to calculate this based on pending orders
+    const low_stock =
+      product.track_quantity && product.quantity <= product.min_qty;
+
+    // Calculate profit per item
+    const profit_per_item =
+      product.price > 0 && product.cost_per_item > 0
+        ? product.price - product.cost_per_item
+        : product.profit || 0;
+
+    // Format collections
+    const collections = product.search_collection
+      ? product.search_collection.map(
+          (collection) => collection.title || collection._id.toString()
+        )
+      : [];
+
+    // Format the product details according to specification
+    const formattedProduct = {
+      title: product.title || "Untitled Product",
+      category: product.category || "Uncategorized",
+      physical_product: product.physical_product || false,
+      description: product.description || "",
+      images: product.media || [],
+      available: available,
+      committed: committed,
+      low_stock: product.min_qty || 10,
+      track_quantity: product.track_quantity || false,
+      continue_out_of_stock: product.continue_out_of_stock || false,
+      weight: parseFloat(product.weight) || 0,
+      unit: product.units || "",
+      status: product.status || "draft",
+      created_at: product.createdAt.toISOString(),
+      tax: product.tax || false,
+      price: product.price || 0,
+      compare_at: product.compare_at_price || 0,
+      cost_per_item: product.cost_per_item || 0,
+      profit_per_item: profit_per_item,
+      tags: product.search_tags || [],
+      collections: collections,
+    };
+
+    const responseData = {
+      message: "Product details retrieved successfully",
+      product: formattedProduct,
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error getting product details:", err);
+    if (err.name === "CastError") {
+      return res.status(400).json({ error: "Invalid product ID format" });
+    }
+    res.status(500).json({ error: "Server error" });
+  }
+};

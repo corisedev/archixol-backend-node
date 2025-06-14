@@ -7,6 +7,8 @@ const {
   getAdminDashboard,
   getAdminOrders,
   getOrderDetails,
+  getAdminProducts,
+  getAdminProductDetails,
 } = require("../controllers/adminController");
 
 // Import middleware
@@ -24,5 +26,11 @@ router.get("/get_orders", getAdminOrders);
 
 // Admin Order Details Route
 router.get("/get_order_details", getOrderDetails);
+
+// Admin Products Routes
+router.get("/get_products", getAdminProducts);
+
+// Admin Product Details Route
+router.get("/get_product_details", getAdminProductDetails);
 
 module.exports = router;
