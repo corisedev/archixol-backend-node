@@ -24,6 +24,10 @@ const DiscountSchema = new mongoose.Schema({
     trim: true,
     maxlength: [100, "Title cannot be more than 100 characters"],
   },
+  discount_category: {
+    type: String,
+    required: true,
+  },
   discount_value_type: {
     type: String,
     enum: ["percentage", "fixed_amount"],

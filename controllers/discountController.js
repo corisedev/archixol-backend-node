@@ -15,6 +15,7 @@ exports.addDiscount = async (req, res) => {
       discount_type,
       code,
       title,
+      discount_category,
       discount_value_type,
       discount_value,
       appliesTo,
@@ -75,24 +76,39 @@ exports.addDiscount = async (req, res) => {
       }
     }
 
+    // Process sale_items to extract just the IDs
+    let processedSaleItems = [];
+    if (sale_items && Array.isArray(sale_items) && sale_items.length > 0) {
+      processedSaleItems = sale_items
+        .map((item) => {
+          // If item is an object with id property, extract the id
+          if (typeof item === "object" && item.id) {
+            return item.id;
+          }
+          // If item is already a string ID, use it directly
+          return item;
+        })
+        .filter((id) => id); // Remove any null/undefined values
+    }
+
     // Validate sale items if appliesTo is not 'all'
-    if (appliesTo !== "all" && sale_items && sale_items.length > 0) {
+    if (appliesTo !== "all" && processedSaleItems.length > 0) {
       if (appliesTo === "products") {
         const products = await Product.find({
-          _id: { $in: sale_items },
+          _id: { $in: processedSaleItems },
           supplier_id: supplierId,
         });
-        if (products.length !== sale_items.length) {
+        if (products.length !== processedSaleItems.length) {
           return res
             .status(400)
             .json({ error: "Some products not found or don't belong to you" });
         }
       } else if (appliesTo === "collections") {
         const collections = await Collection.find({
-          _id: { $in: sale_items },
+          _id: { $in: processedSaleItems },
           supplier_id: supplierId,
         });
-        if (collections.length !== sale_items.length) {
+        if (collections.length !== processedSaleItems.length) {
           return res.status(400).json({
             error: "Some collections not found or don't belong to you",
           });
@@ -100,20 +116,61 @@ exports.addDiscount = async (req, res) => {
       }
     }
 
-    // Validate customer list if eligibility is specific customers
+    // Process other sale item arrays
+    let processedBuySpendSaleItems = [];
+    if (buy_spend_sale_items && Array.isArray(buy_spend_sale_items)) {
+      processedBuySpendSaleItems = buy_spend_sale_items
+        .map((item) => {
+          if (typeof item === "object" && item.id) {
+            return item.id;
+          }
+          return item;
+        })
+        .filter((id) => id);
+    }
+
+    let processedGetsSaleItems = [];
+    if (gets_sale_items && Array.isArray(gets_sale_items)) {
+      processedGetsSaleItems = gets_sale_items
+        .map((item) => {
+          if (typeof item === "object" && item.id) {
+            return item.id;
+          }
+          return item;
+        })
+        .filter((id) => id);
+    }
+
+    // Process customer_list to extract just the IDs
+    let processedCustomerList = [];
     if (
-      eligibility === "specific_customers" &&
       customer_list &&
+      Array.isArray(customer_list) &&
       customer_list.length > 0
     ) {
-      const customers = await Customer.find({
-        _id: { $in: customer_list },
-        supplier_id: supplierId,
-      });
-      if (customers.length !== customer_list.length) {
-        return res
-          .status(400)
-          .json({ error: "Some customers not found or don't belong to you" });
+      processedCustomerList = customer_list
+        .map((customer) => {
+          if (typeof customer === "object" && customer.id) {
+            return customer.id;
+          }
+          return customer;
+        })
+        .filter((id) => id);
+
+      // Validate customer list if eligibility is specific customers
+      if (
+        eligibility === "specific_customers" &&
+        processedCustomerList.length > 0
+      ) {
+        const customers = await Customer.find({
+          _id: { $in: processedCustomerList },
+          supplier_id: supplierId,
+        });
+        if (customers.length !== processedCustomerList.length) {
+          return res
+            .status(400)
+            .json({ error: "Some customers not found or don't belong to you" });
+        }
       }
     }
 
@@ -149,6 +206,7 @@ exports.addDiscount = async (req, res) => {
       supplier_id: supplierId,
       discount_type,
       title,
+      discount_category,
       discount_value_type,
       discount_value,
       applies_to: appliesTo,
@@ -174,8 +232,12 @@ exports.addDiscount = async (req, res) => {
       max_users: max_users || 1,
     };
 
-    // Add optional fields if provided
-    if (discount_type === "code" && code) {
+    if (discount_type === "code") {
+      if (!code || code.trim() === "") {
+        return res
+          .status(400)
+          .json({ error: "Code is required for code-type discounts" });
+      }
       discountData.code = code.toUpperCase();
     }
 
@@ -183,24 +245,24 @@ exports.addDiscount = async (req, res) => {
       discountData.end_datetime = end_datetime;
     }
 
-    if (sale_items && sale_items.length > 0) {
-      discountData.sale_items = sale_items;
+    if (processedSaleItems.length > 0) {
+      discountData.sale_items = processedSaleItems;
       discountData.sale_items_type =
         appliesTo === "collections" ? "Collection" : "Product";
     }
 
-    if (customer_list && customer_list.length > 0) {
-      discountData.customer_list = customer_list;
+    if (processedCustomerList.length > 0) {
+      discountData.customer_list = processedCustomerList;
     }
 
-    if (buy_spend_sale_items && buy_spend_sale_items.length > 0) {
-      discountData.buy_spend_sale_items = buy_spend_sale_items;
+    if (processedBuySpendSaleItems.length > 0) {
+      discountData.buy_spend_sale_items = processedBuySpendSaleItems;
       discountData.buy_spend_sale_items_type =
         buy_spend_any_item_from === "collections" ? "Collection" : "Product";
     }
 
-    if (gets_sale_items && gets_sale_items.length > 0) {
-      discountData.gets_sale_items = gets_sale_items;
+    if (processedGetsSaleItems.length > 0) {
+      discountData.gets_sale_items = processedGetsSaleItems;
       discountData.gets_sale_items_type =
         gets_any_item_from === "collections" ? "Collection" : "Product";
     }
@@ -221,21 +283,9 @@ exports.addDiscount = async (req, res) => {
     };
 
     const encryptedData = encryptData(responseData);
-    res.status(201).json({ data: encryptedData });
+    res.status(200).json({ data: encryptedData });
   } catch (err) {
-    console.error("Error creating discount:", err);
-
-    // Handle validation errors
-    if (err.name === "ValidationError") {
-      const message = Object.values(err.errors)[0].message;
-      return res.status(400).json({ error: message });
-    }
-
-    // Handle duplicate key errors
-    if (err.code === 11000) {
-      return res.status(400).json({ error: "Discount code already exists" });
-    }
-
+    console.error("Error deleting discount:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
@@ -560,9 +610,11 @@ exports.getDiscounts = async (req, res) => {
     // Format discount list according to specification
     const discount_list = discounts.map((discount) => ({
       id: discount._id,
-      code_or_title: discount.code || discount.title,
-      discount_category: discount.discount_type,
+      code: discount.code,
+      title: discount.title,
+      discount_category: discount.discount_category,
       discount_value: discount.discount_value,
+      discount_value_type: discount.discount_value_type,
       appliesTo: discount.applies_to,
       start_datetime: discount.start_datetime,
       end_datetime: discount.end_datetime,

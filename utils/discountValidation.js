@@ -59,11 +59,6 @@ exports.validateAddDiscount = [
     .isArray()
     .withMessage("Sale items must be an array"),
 
-  body("sale_items.*")
-    .optional()
-    .isMongoId()
-    .withMessage("Invalid sale item ID format"),
-
   body("start_datetime")
     .optional()
     .isISO8601()
@@ -101,11 +96,6 @@ exports.validateAddDiscount = [
     .optional()
     .isArray()
     .withMessage("Customer list must be an array"),
-
-  body("customer_list.*")
-    .optional()
-    .isMongoId()
-    .withMessage("Invalid customer ID format"),
 
   body("min_purchase_req")
     .optional()
@@ -164,11 +154,6 @@ exports.validateAddDiscount = [
     .isArray()
     .withMessage("Buy spend sale items must be an array"),
 
-  body("buy_spend_sale_items.*")
-    .optional()
-    .isMongoId()
-    .withMessage("Invalid buy spend sale item ID format"),
-
   body("gets_quantity")
     .optional()
     .isInt({ min: 1 })
@@ -183,11 +168,6 @@ exports.validateAddDiscount = [
     .optional()
     .isArray()
     .withMessage("Gets sale items must be an array"),
-
-  body("gets_sale_items.*")
-    .optional()
-    .isMongoId()
-    .withMessage("Invalid gets sale item ID format"),
 
   body("discounted_value")
     .optional()
@@ -219,20 +199,12 @@ exports.validateAddDiscount = [
 
 // Validate get discount request
 exports.validateGetDiscount = [
-  body("discount_id")
-    .notEmpty()
-    .withMessage("Discount ID is required")
-    .isMongoId()
-    .withMessage("Invalid discount ID format"),
+  body("discount_id").notEmpty().withMessage("Discount ID is required"),
 ];
 
 // Validate update discount request
 exports.validateUpdateDiscount = [
-  body("discount_id")
-    .notEmpty()
-    .withMessage("Discount ID is required")
-    .isMongoId()
-    .withMessage("Invalid discount ID format"),
+  body("discount_id").notEmpty().withMessage("Discount ID is required"),
 
   body("title")
     .optional()
@@ -277,20 +249,12 @@ exports.validateUpdateDiscount = [
 
 // Validate delete discount request
 exports.validateDeleteDiscount = [
-  body("discount_id")
-    .notEmpty()
-    .withMessage("Discount ID is required")
-    .isMongoId()
-    .withMessage("Invalid discount ID format"),
+  body("discount_id").notEmpty().withMessage("Discount ID is required"),
 ];
 
 // Validate toggle discount status request
 exports.validateToggleDiscountStatus = [
-  body("discount_id")
-    .notEmpty()
-    .withMessage("Discount ID is required")
-    .isMongoId()
-    .withMessage("Invalid discount ID format"),
+  body("discount_id").notEmpty().withMessage("Discount ID is required"),
 ];
 
 // Validate discount code validation request
@@ -301,11 +265,6 @@ exports.validateDiscountCode = [
     .withMessage("Discount code is required")
     .isLength({ min: 3, max: 20 })
     .withMessage("Discount code must be between 3 and 20 characters"),
-
-  body("customer_id")
-    .optional()
-    .isMongoId()
-    .withMessage("Invalid customer ID format"),
 
   body("order_items")
     .optional()
@@ -320,16 +279,7 @@ exports.validateDiscountCode = [
 
 // Validate apply discount request
 exports.validateApplyDiscount = [
-  body("discount_id")
-    .notEmpty()
-    .withMessage("Discount ID is required")
-    .isMongoId()
-    .withMessage("Invalid discount ID format"),
-
-  body("customer_id")
-    .optional()
-    .isMongoId()
-    .withMessage("Invalid customer ID format"),
+  body("discount_id").notEmpty().withMessage("Discount ID is required"),
 
   body("order_items")
     .isArray({ min: 1 })
@@ -337,9 +287,7 @@ exports.validateApplyDiscount = [
 
   body("order_items.*.product_id")
     .notEmpty()
-    .withMessage("Product ID is required for each order item")
-    .isMongoId()
-    .withMessage("Invalid product ID format"),
+    .withMessage("Product ID is required for each order item"),
 
   body("order_items.*.quantity")
     .isInt({ min: 1 })
@@ -356,11 +304,6 @@ exports.validateApplyDiscount = [
 
 // Validate discount usage report request
 exports.validateDiscountUsageReport = [
-  body("discount_id")
-    .optional()
-    .isMongoId()
-    .withMessage("Invalid discount ID format"),
-
   body("start_date")
     .optional()
     .isISO8601()
