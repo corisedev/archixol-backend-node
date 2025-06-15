@@ -1,3 +1,4 @@
+// models/User.js (Updated with new fields)
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -29,7 +30,7 @@ const UserSchema = new mongoose.Schema({
   },
   user_type: {
     type: String,
-    enum: ["supplier", "service_provider", "client"],
+    enum: ["supplier", "service_provider", "client", "admin"],
     required: [true, "Please specify user type"],
   },
   agree_terms: {
@@ -65,6 +66,16 @@ const UserSchema = new mongoose.Schema({
     type: [String],
     default: [],
     // Example permissions: ['manage_users', 'view_analytics', 'manage_orders', 'manage_content']
+  },
+  // ✅ NEW FIELDS ADDED
+  firstLogin: {
+    type: Boolean,
+    default: false,
+  },
+  accessRoles: {
+    type: [String],
+    enum: ["client", "supplier", "service_provider"],
+    default: ["client"], // Default to client role
   },
   emailVerificationToken: String,
   emailVerificationExpire: Date,

@@ -102,8 +102,24 @@ exports.login = [
         return res.status(401).json({ error: "Invalid credentials" });
       }
 
-      if (!user.isEmailVerified) {
-        return res.status(400).json({ error: "Email not verified" });
+      // ✅ CHECK AND UPDATE FIRST LOGIN
+      let isFirstLogin = false;
+      if (!user.firstLogin) {
+        user.firstLogin = true;
+        await user.save();
+        isFirstLogin = true;
+      }
+
+      // ✅ GET USER PROFILE DATA
+      let userProfile = null;
+      try {
+        const UserProfile = require("../models/UserProfile");
+        userProfile = await UserProfile.findOne({ user_id: user._id });
+      } catch (profileError) {
+        console.error(
+          "Error fetching user profile during login:",
+          profileError
+        );
       }
 
       const token = user.getSignedJwtToken();
@@ -112,6 +128,10 @@ exports.login = [
         id: user._id,
         email: user.email,
         username: user.username,
+        firstLogin: isFirstLogin,
+        accessRoles: user.accessRoles,
+        fullname: userProfile ? userProfile.fullname : null,
+        profile_img: userProfile ? userProfile.profile_img : "",
       };
 
       const responseData = {
@@ -377,41 +397,35 @@ exports.getCurrentUser = async (req, res) => {
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
+
+    // ✅ GET USER PROFILE DATA
+    let userProfile = null;
     try {
       const UserProfile = require("../models/UserProfile");
-      const userProfile = await UserProfile.findOne({ user_id: user._id });
-
-      const userData = {
-        id: user._id,
-        email: user.email,
-        username: user.username,
-        user_type: user.user_type,
-        isEmailVerified: user.isEmailVerified,
-        fullname: userProfile ? userProfile.fullname : null,
-        isCompany: user.company || false,
-        profile_template: user.profileTemplate || "default",
-      };
-
-      const responseData = { user: userData };
-      const encryptedData = encryptData(responseData);
-      res.status(200).json({ data: encryptedData });
+      userProfile = await UserProfile.findOne({ user_id: user._id });
     } catch (profileError) {
       console.error("Error fetching user profile:", profileError);
-      const userData = {
-        id: user._id,
-        email: user.email,
-        username: user.username,
-        user_type: user.user_type,
-        isEmailVerified: user.isEmailVerified,
-        fullname: null,
-        isCompany: false,
-        profile_template: "default",
-      };
-
-      const responseData = { user: userData };
-      const encryptedData = encryptData(responseData);
-      res.status(200).json({ data: encryptedData });
     }
+
+    const userData = {
+      id: user._id,
+      email: user.email,
+      username: user.username,
+      user_type: user.user_type,
+      isEmailVerified: user.isEmailVerified,
+      isCompany: user.company || false,
+      profile_template: user.profile_template || "default",
+      // ✅ ADD NEW FIELDS TO RESPONSE
+      firstLogin: user.firstLogin,
+      accessRoles: user.accessRoles,
+      // ✅ ADD PROFILE DATA
+      fullname: userProfile ? userProfile.fullname : null,
+      profile_img: userProfile ? userProfile.profile_img : "",
+    };
+
+    const responseData = { user: userData };
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });
@@ -449,6 +463,83 @@ exports.becomeCompany = async (req, res) => {
       message: "Successfully registered as a company",
       user: {
         isCompany: true,
+      },
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// ✅ NEW API: Become a supplier
+// @desc    Become a supplier
+// @route   POST /account/become_a_supplier
+// @access  Private
+exports.becomeSupplier = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Check if user already has supplier access
+    if (user.accessRoles.includes("supplier")) {
+      return res.status(400).json({
+        error: "User already has supplier access",
+      });
+    }
+
+    // Add supplier to access roles
+    user.accessRoles.push("supplier");
+    await user.save();
+
+    const responseData = {
+      message: "Successfully became a supplier",
+      user: {
+        accessRoles: user.accessRoles,
+      },
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Become a service provider
+// @route   POST /account/become_a_service_provider
+// @access  Private
+exports.becomeServiceProvider = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Check if user already has service provider access
+    if (user.accessRoles.includes("service_provider")) {
+      return res.status(400).json({
+        error: "User already has service provider access",
+      });
+    }
+
+    // Add service_provider to access roles
+    user.accessRoles.push("service_provider");
+    await user.save();
+
+    const responseData = {
+      message: "Successfully became a service provider",
+      user: {
+        accessRoles: user.accessRoles,
       },
     };
 

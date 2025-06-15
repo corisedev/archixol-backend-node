@@ -1,4 +1,4 @@
-// controllers/adminController.js
+// controllers/adminController.js (Fixed version for customer_id string issue)
 const User = require("../models/User");
 const Order = require("../models/Order");
 const ClientOrder = require("../models/ClientOrder");
@@ -55,6 +55,27 @@ const getDateRanges = () => {
     previous30Days,
     now,
   };
+};
+
+// Helper function to get customer data for orders
+const getCustomerDataForOrders = async (orders) => {
+  // Extract unique customer IDs from orders
+  const customerIds = [
+    ...new Set(orders.map((order) => order.customer_id).filter(Boolean)),
+  ];
+
+  // Fetch customers from Customer collection
+  const customers = await Customer.find({
+    _id: { $in: customerIds },
+  }).select("_id first_name last_name email phone_number createdAt");
+
+  // Create a map for quick lookup
+  const customerMap = new Map();
+  customers.forEach((customer) => {
+    customerMap.set(customer._id.toString(), customer);
+  });
+
+  return customerMap;
 };
 
 // @desc    Get admin dashboard data
@@ -594,11 +615,10 @@ exports.getAdminOrders = async (req, res) => {
         ? (previousOrdersCount / previousUsersCount) * 100
         : 0;
 
-    // Get detailed orders data
+    // Get detailed orders data with manual customer lookup
     const [supplierOrders, clientOrders] = await Promise.all([
       Order.find({})
         .populate("supplier_id", "username email")
-        .populate("customer_id", "first_name last_name email")
         .sort({ createdAt: -1 })
         .limit(50),
       ClientOrder.find({})
@@ -608,25 +628,31 @@ exports.getAdminOrders = async (req, res) => {
         .limit(50),
     ]);
 
+    // Get customer data for supplier orders manually
+    const customerMap = await getCustomerDataForOrders(supplierOrders);
+
     // Format orders according to specification
     const formattedOrders = [];
 
-    // Format supplier orders
+    // Format supplier orders with manual customer lookup
     supplierOrders.forEach((order) => {
       const items =
         order.products
           ?.map((product) => product.title || "Product")
           .filter(Boolean) || [];
 
+      // Get customer data from our manual lookup
+      const customerData = customerMap.get(order.customer_id);
+
       formattedOrders.push({
         order_no: order.order_no,
         customer: {
-          full_name: order.customer_id
-            ? `${order.customer_id.first_name || ""} ${
-                order.customer_id.last_name || ""
-              }`.trim() || order.customer_id
-            : "Unknown Customer",
-          email: order.customer_id?.email || "N/A",
+          full_name: customerData
+            ? `${customerData.first_name || ""} ${
+                customerData.last_name || ""
+              }`.trim()
+            : order.customer_id || "Unknown Customer",
+          email: customerData?.email || "N/A",
         },
         items: items,
         supplier_name: order.supplier_id?.username || "Unknown Supplier",
@@ -731,12 +757,7 @@ exports.getOrderDetails = async (req, res) => {
 
     // Try to find the order in both Order and ClientOrder collections
     const [supplierOrder, clientOrder] = await Promise.all([
-      Order.findOne({ order_no })
-        .populate("supplier_id", "username email")
-        .populate(
-          "customer_id",
-          "first_name last_name email phone_number createdAt"
-        ),
+      Order.findOne({ order_no }).populate("supplier_id", "username email"),
       ClientOrder.findOne({ order_no })
         .populate("client_id", "username email createdAt")
         .populate("supplier_id", "username email"),
@@ -817,8 +838,19 @@ exports.getOrderDetails = async (req, res) => {
           order.createdAt?.toISOString(),
       };
     } else {
-      const customerId = order.customer_id?._id;
-      if (customerId) {
+      // For supplier orders, manually get customer data
+      let customerData = null;
+      if (order.customer_id) {
+        try {
+          customerData = await Customer.findById(order.customer_id).select(
+            "first_name last_name email phone_number createdAt"
+          );
+        } catch (error) {
+          console.log(`Customer not found for ID: ${order.customer_id}`);
+        }
+      }
+
+      if (customerData) {
         // Get customer's order history from both collections
         const [
           supplierOrderCount,
@@ -826,14 +858,14 @@ exports.getOrderDetails = async (req, res) => {
           clientOrderCount,
           clientOrderTotal,
         ] = await Promise.all([
-          Order.countDocuments({ customer_id: customerId }),
+          Order.countDocuments({ customer_id: order.customer_id }),
           Order.aggregate([
-            { $match: { customer_id: customerId } },
+            { $match: { customer_id: order.customer_id } },
             { $group: { _id: null, total: { $sum: "$calculations.total" } } },
           ]),
-          ClientOrder.countDocuments({ client_id: customerId }),
+          ClientOrder.countDocuments({ client_id: customerData._id }),
           ClientOrder.aggregate([
-            { $match: { client_id: customerId } },
+            { $match: { client_id: customerData._id } },
             { $group: { _id: null, total: { $sum: "$total" } } },
           ]),
         ]);
@@ -842,22 +874,30 @@ exports.getOrderDetails = async (req, res) => {
         totalSpent =
           (supplierOrderTotal[0]?.total || 0) +
           (clientOrderTotal[0]?.total || 0);
-      }
 
-      customerInfo = {
-        full_name: order.customer_id
-          ? `${order.customer_id.first_name || ""} ${
-              order.customer_id.last_name || ""
-            }`.trim()
-          : "Unknown Customer",
-        email: order.customer_id?.email || "N/A",
-        phone_number: order.customer_id?.phone_number || "N/A",
-        total_orders: totalOrders,
-        total_spent: totalSpent,
-        created_at:
-          order.customer_id?.createdAt?.toISOString() ||
-          order.createdAt?.toISOString(),
-      };
+        customerInfo = {
+          full_name: `${customerData.first_name || ""} ${
+            customerData.last_name || ""
+          }`.trim(),
+          email: customerData.email || "N/A",
+          phone_number: customerData.phone_number || "N/A",
+          total_orders: totalOrders,
+          total_spent: totalSpent,
+          created_at:
+            customerData.createdAt?.toISOString() ||
+            order.createdAt?.toISOString(),
+        };
+      } else {
+        // Fallback if customer not found
+        customerInfo = {
+          full_name: order.customer_id || "Unknown Customer",
+          email: "N/A",
+          phone_number: "N/A",
+          total_orders: 0,
+          total_spent: 0,
+          created_at: order.createdAt?.toISOString(),
+        };
+      }
     }
 
     // Order timeline
