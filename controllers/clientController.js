@@ -364,6 +364,7 @@ exports.getProducts = async (req, res) => {
       .populate({
         path: "supplier_id",
         select: "username",
+        match: { isEmailVerified: true },
       })
       .sort({ createdAt: -1 })
       .lean();
@@ -467,6 +468,7 @@ exports.getServices = async (req, res) => {
       .populate({
         path: "user",
         select: "username user_type",
+        match: { isEmailVerified: true },
       })
       .sort({ createdAt: -1 })
       .lean();
