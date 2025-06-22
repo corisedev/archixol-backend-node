@@ -1,6 +1,7 @@
 // controllers/adminController.js (Fixed version for customer_id string issue)
 const User = require("../models/User");
 const UserProfile = require("../models/UserProfile");
+const ClientProfile = require("../models/ClientProfile");
 const Job = require("../models/Job");
 const Order = require("../models/Order");
 const ClientOrder = require("../models/ClientOrder");
@@ -9,6 +10,8 @@ const Product = require("../models/Product");
 const Service = require("../models/Service");
 const ProjectJob = require("../models/ProjectJob");
 const { encryptData } = require("../utils/encryptResponse");
+const SupplierStore = require("../models/SupplierStore");
+const { StoreDetails } = require("../models/SupplierSettings");
 
 // Helper function to calculate trending percentage
 const calculateTrending = (current, previous) => {
@@ -1344,6 +1347,1343 @@ exports.getAdminServiceDetails = async (req, res) => {
     if (err.name === "CastError") {
       return res.status(400).json({ error: "Invalid service ID format" });
     }
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Toggle service status (active/inactive)
+// @route   POST /admin/service_status_toggle
+// @access  Private (Admin Only)
+exports.toggleServiceStatus = async (req, res) => {
+  try {
+    const { service_id, status } = req.body;
+
+    // Validate input
+    if (!service_id) {
+      return res.status(400).json({ error: "Service ID is required" });
+    }
+
+    if (typeof status !== "boolean") {
+      return res.status(400).json({ error: "Status must be true or false" });
+    }
+
+    // Find the service
+    const service = await Service.findById(service_id);
+
+    if (!service) {
+      return res.status(404).json({ error: "Service not found" });
+    }
+
+    // Get service provider details for logging
+    const serviceProvider = await User.findById(service.user).select(
+      "username email"
+    );
+
+    // Update service status
+    service.service_status = status;
+    await service.save();
+
+    // Log the action
+    console.log(
+      `Admin ${req.user.username} ${
+        status ? "activated" : "deactivated"
+      } service "${service.service_title}" by ${
+        serviceProvider?.username || "Unknown"
+      }`
+    );
+
+    const responseData = {
+      message: `Service has been ${
+        status ? "activated" : "deactivated"
+      } successfully`,
+      service_id: service_id,
+      service_title: service.service_title,
+      new_status: status,
+      service_provider: serviceProvider?.username || "Unknown",
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error toggling service status:", err);
+
+    // Handle invalid ObjectId
+    if (err.name === "CastError") {
+      return res.status(400).json({ error: "Invalid service ID format" });
+    }
+
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Get all customers data for admin
+// @route   GET /admin/get_customers
+// @access  Private (Admin Only)
+exports.getAdminCustomers = async (req, res) => {
+  try {
+    const dateRanges = getDateRanges();
+    const {
+      currentMonthStart,
+      currentMonthEnd,
+      previousMonthStart,
+      previousMonthEnd,
+    } = dateRanges;
+
+    // 1. Total Customers (users with user_type 'client' or accessRoles containing 'client')
+    const totalCustomersCurrentMonth = await User.countDocuments({
+      $or: [{ user_type: "client" }, { accessRoles: { $in: ["client"] } }],
+      createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
+    });
+
+    const totalCustomersPreviousMonth = await User.countDocuments({
+      $or: [{ user_type: "client" }, { accessRoles: { $in: ["client"] } }],
+      createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
+    });
+
+    const totalCustomersOverall = await User.countDocuments({
+      $or: [{ user_type: "client" }, { accessRoles: { $in: ["client"] } }],
+    });
+
+    // 2. Active Customers (customers who have placed orders or created projects in last 30 days)
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+
+    // Get active customers from orders and projects
+    const [activeOrderCustomers, activeProjectCustomers] = await Promise.all([
+      ClientOrder.distinct("client_id", {
+        placed_at: { $gte: thirtyDaysAgo },
+      }),
+      ProjectJob.distinct("client_id", {
+        createdAt: { $gte: thirtyDaysAgo },
+      }),
+    ]);
+
+    const [previousActiveOrderCustomers, previousActiveProjectCustomers] =
+      await Promise.all([
+        ClientOrder.distinct("client_id", {
+          placed_at: { $gte: sixtyDaysAgo, $lt: thirtyDaysAgo },
+        }),
+        ProjectJob.distinct("client_id", {
+          createdAt: { $gte: sixtyDaysAgo, $lt: thirtyDaysAgo },
+        }),
+      ]);
+
+    // Combine and deduplicate active customers
+    const activeCustomersSet = new Set([
+      ...activeOrderCustomers,
+      ...activeProjectCustomers,
+    ]);
+    const previousActiveCustomersSet = new Set([
+      ...previousActiveOrderCustomers,
+      ...previousActiveProjectCustomers,
+    ]);
+
+    const activeCustomersCount = activeCustomersSet.size;
+    const previousActiveCustomersCount = previousActiveCustomersSet.size;
+
+    // 3. New This Month
+    const newThisMonthCount = totalCustomersCurrentMonth;
+    const newPreviousMonthCount = totalCustomersPreviousMonth;
+
+    // 4. Total Investment (sum of all orders from customers)
+    const currentMonthInvestment = await Promise.all([
+      ClientOrder.aggregate([
+        {
+          $match: {
+            placed_at: { $gte: currentMonthStart, $lte: currentMonthEnd },
+          },
+        },
+        { $group: { _id: null, total: { $sum: "$total" } } },
+      ]),
+    ]);
+
+    const previousMonthInvestment = await Promise.all([
+      ClientOrder.aggregate([
+        {
+          $match: {
+            placed_at: { $gte: previousMonthStart, $lte: previousMonthEnd },
+          },
+        },
+        { $group: { _id: null, total: { $sum: "$total" } } },
+      ]),
+    ]);
+
+    const currentInvestment = currentMonthInvestment[0][0]?.total || 0;
+    const previousInvestment = previousMonthInvestment[0][0]?.total || 0;
+
+    // Get total investment overall
+    const totalInvestmentOverall = await ClientOrder.aggregate([
+      { $group: { _id: null, total: { $sum: "$total" } } },
+    ]);
+    const overallInvestment = totalInvestmentOverall[0]?.total || 0;
+
+    // 5. Get all customers with their details
+    const customers = await User.find({
+      $or: [{ user_type: "client" }, { accessRoles: { $in: ["client"] } }],
+    })
+      .select("_id username email createdAt")
+      .sort({ createdAt: -1 })
+      .limit(100);
+
+    // Get detailed customer data
+    const formattedCustomers = await Promise.all(
+      customers.map(async (customer) => {
+        // Get profile information
+        const clientProfile = await ClientProfile.findOne({
+          user_id: customer._id,
+        });
+
+        // Get order count and total investment for this customer
+        const [orderCount, orderTotal] = await Promise.all([
+          ClientOrder.countDocuments({ client_id: customer._id }),
+          ClientOrder.aggregate([
+            { $match: { client_id: customer._id } },
+            { $group: { _id: null, total: { $sum: "$total" } } },
+          ]),
+        ]);
+
+        // Get project count
+        const projectCount = await ProjectJob.countDocuments({
+          client_id: customer._id,
+        });
+
+        // Get phone number from profile
+        const phone_number = clientProfile?.phone_number || "N/A";
+        const full_name =
+          clientProfile?.full_name || customer.username || "N/A";
+
+        return {
+          customer: {
+            id: customer._id.toString(),
+            full_name: full_name,
+            email: customer.email,
+            phone_number: phone_number,
+          },
+          order_count: orderCount,
+          project_count: projectCount,
+          total_investment: orderTotal[0]?.total || 0,
+          join_date: customer.createdAt.toISOString(),
+          status: "active", // You can implement logic to determine inactive customers
+        };
+      })
+    );
+
+    // 6. Recent Activities
+    const activities = [];
+
+    // Get recent customer registrations
+    const recentCustomers = await User.find({
+      $or: [{ user_type: "client" }, { accessRoles: { $in: ["client"] } }],
+    })
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .select("username createdAt");
+
+    recentCustomers.forEach((customer) => {
+      activities.push({
+        title: "New Customer Registration",
+        detail: `${customer.username} joined as a customer`,
+        type: "customer_registration",
+        time: customer.createdAt,
+      });
+    });
+
+    // Get recent orders
+    const recentOrders = await ClientOrder.find({})
+      .populate("client_id", "username")
+      .sort({ placed_at: -1 })
+      .limit(10)
+      .select("order_no client_id total placed_at");
+
+    recentOrders.forEach((order) => {
+      activities.push({
+        title: "New Order Placed",
+        detail: `${order.client_id?.username || "Customer"} placed order ${
+          order.order_no
+        } worth $${order.total}`,
+        type: "order_placed",
+        time: order.placed_at,
+      });
+    });
+
+    // Get recent projects
+    const recentProjects = await ProjectJob.find({})
+      .populate("client_id", "username")
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .select("title client_id budget createdAt");
+
+    recentProjects.forEach((project) => {
+      activities.push({
+        title: "New Project Created",
+        detail: `${
+          project.client_id?.username || "Customer"
+        } created project "${project.title}" with budget PKR ${project.budget}`,
+        type: "project_created",
+        time: project.createdAt,
+      });
+    });
+
+    // Sort activities by time and limit to 20
+    activities.sort((a, b) => new Date(b.time) - new Date(a.time));
+    const sortedActivities = activities.slice(0, 20);
+
+    // Build stats object
+    const stats = {
+      total_customers: {
+        value: totalCustomersOverall,
+        trendingValue: calculateTrending(
+          totalCustomersCurrentMonth,
+          totalCustomersPreviousMonth
+        ),
+        isTrending: isTrendingPositive(
+          calculateTrending(
+            totalCustomersCurrentMonth,
+            totalCustomersPreviousMonth
+          )
+        ),
+      },
+      active_customers: {
+        value: activeCustomersCount,
+        trendingValue: calculateTrending(
+          activeCustomersCount,
+          previousActiveCustomersCount
+        ),
+        isTrending: isTrendingPositive(
+          calculateTrending(activeCustomersCount, previousActiveCustomersCount)
+        ),
+      },
+      new_this_month: {
+        value: newThisMonthCount,
+        trendingValue: calculateTrending(
+          newThisMonthCount,
+          newPreviousMonthCount
+        ),
+        isTrending: isTrendingPositive(
+          calculateTrending(newThisMonthCount, newPreviousMonthCount)
+        ),
+      },
+      total_investment: {
+        value: overallInvestment,
+        trendingValue: calculateTrending(currentInvestment, previousInvestment),
+        isTrending: isTrendingPositive(
+          calculateTrending(currentInvestment, previousInvestment)
+        ),
+      },
+    };
+
+    const responseData = {
+      message: "Admin customers data retrieved successfully",
+      stats,
+      customers: formattedCustomers,
+      activities: sortedActivities,
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error getting admin customers data:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// controllers/adminController.js - Add this function to existing adminController.js
+
+// @desc    Get specific customer details for admin
+// @route   POST /admin/get_customer
+// @access  Private (Admin Only)
+exports.getAdminCustomer = async (req, res) => {
+  try {
+    const { customer_id } = req.body;
+
+    if (!customer_id) {
+      return res.status(400).json({ error: "Customer ID is required" });
+    }
+
+    // Find the customer
+    const customer = await User.findById(customer_id);
+
+    if (!customer) {
+      return res.status(404).json({ error: "Customer not found" });
+    }
+
+    // Verify the user is a customer
+    const isCustomer =
+      customer.user_type === "client" ||
+      (customer.accessRoles && customer.accessRoles.includes("client"));
+
+    if (!isCustomer) {
+      return res.status(400).json({ error: "User is not a customer" });
+    }
+
+    // Get customer profile information
+    const clientProfile = await ClientProfile.findOne({ user_id: customer_id });
+
+    // Get date ranges for trending calculations
+    const dateRanges = getDateRanges();
+    const {
+      currentMonthStart,
+      currentMonthEnd,
+      previousMonthStart,
+      previousMonthEnd,
+    } = dateRanges;
+
+    // Get customer orders and calculations
+    const [
+      currentMonthOrders,
+      previousMonthOrders,
+      totalOrders,
+      currentMonthSpent,
+      previousMonthSpent,
+      totalSpent,
+      lastOrder,
+    ] = await Promise.all([
+      ClientOrder.countDocuments({
+        client_id: customer_id,
+        placed_at: { $gte: currentMonthStart, $lte: currentMonthEnd },
+      }),
+      ClientOrder.countDocuments({
+        client_id: customer_id,
+        placed_at: { $gte: previousMonthStart, $lte: previousMonthEnd },
+      }),
+      ClientOrder.countDocuments({ client_id: customer_id }),
+      ClientOrder.aggregate([
+        {
+          $match: {
+            client_id: customer._id,
+            placed_at: { $gte: currentMonthStart, $lte: currentMonthEnd },
+          },
+        },
+        { $group: { _id: null, total: { $sum: "$total" } } },
+      ]),
+      ClientOrder.aggregate([
+        {
+          $match: {
+            client_id: customer._id,
+            placed_at: { $gte: previousMonthStart, $lte: previousMonthEnd },
+          },
+        },
+        { $group: { _id: null, total: { $sum: "$total" } } },
+      ]),
+      ClientOrder.aggregate([
+        { $match: { client_id: customer._id } },
+        { $group: { _id: null, total: { $sum: "$total" } } },
+      ]),
+      ClientOrder.findOne({ client_id: customer_id })
+        .sort({ placed_at: -1 })
+        .select("placed_at"),
+    ]);
+
+    // Get customer projects
+    const [currentMonthProjects, previousMonthProjects, totalProjects] =
+      await Promise.all([
+        ProjectJob.countDocuments({
+          client_id: customer_id,
+          createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
+        }),
+        ProjectJob.countDocuments({
+          client_id: customer_id,
+          createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
+        }),
+        ProjectJob.countDocuments({ client_id: customer_id }),
+      ]);
+
+    const currentSpent = currentMonthSpent[0]?.total || 0;
+    const previousSpent = previousMonthSpent[0]?.total || 0;
+    const totalSpentAmount = totalSpent[0]?.total || 0;
+    const averageOrderValue =
+      totalOrders > 0 ? totalSpentAmount / totalOrders : 0;
+
+    // Build personal info
+    const personalInfo = {
+      full_name: clientProfile?.full_name || customer.username || "N/A",
+      status: true, // Assume active for now
+      customer_id: customer._id.toString(),
+      joinedDate: new Date(customer.createdAt).toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "short",
+        day: "2-digit",
+      }),
+      bio: clientProfile?.about || "No bio available",
+      contact: {
+        phone_number: clientProfile?.phone_number || "N/A",
+        email: customer.email,
+      },
+      defaultAddress: clientProfile?.address || clientProfile?.city || "N/A",
+      plan: "Standard Member", // You can implement plan logic
+      email_subscription: true, // You can get this from customer settings
+      sms_subscription: true,
+      language: "English", // You can get this from customer settings
+    };
+
+    // Build stats with trending
+    const stats = [
+      {
+        label: "Total orders",
+        value: totalOrders,
+        trendingValue: calculateTrending(
+          currentMonthOrders,
+          previousMonthOrders
+        ),
+        isPrice: false,
+        isTrending: isTrendingPositive(
+          calculateTrending(currentMonthOrders, previousMonthOrders)
+        ),
+      },
+      {
+        label: "Total amount spent",
+        value: Math.round(totalSpentAmount),
+        trendingValue: calculateTrending(currentSpent, previousSpent),
+        isPrice: true,
+        isTrending: isTrendingPositive(
+          calculateTrending(currentSpent, previousSpent)
+        ),
+      },
+      {
+        label: "Average order value",
+        value: Math.round(averageOrderValue),
+        trendingValue: calculateTrending(averageOrderValue, averageOrderValue), // Simple for now
+        isPrice: true,
+        isTrending: true,
+      },
+      {
+        label: "Total jobs",
+        value: totalProjects,
+        trendingValue: calculateTrending(
+          currentMonthProjects,
+          previousMonthProjects
+        ),
+        isPrice: false,
+        isTrending: isTrendingPositive(
+          calculateTrending(currentMonthProjects, previousMonthProjects)
+        ),
+      },
+    ];
+
+    // Get service requests history (projects)
+    const serviceRequests = await ProjectJob.find({ client_id: customer_id })
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .select("title description budget status createdAt");
+
+    const serviceRequestsHistory = serviceRequests.map((project) => {
+      let progress = 0;
+      switch (project.status) {
+        case "completed":
+          progress = 100;
+          break;
+        case "in_progress":
+          progress = 50;
+          break;
+        case "open":
+          progress = 10;
+          break;
+        default:
+          progress = 0;
+      }
+
+      return {
+        title: project.title || "Untitled Project",
+        detail: project.description || "No description available",
+        progress: progress,
+        budget: project.budget || 0,
+        status: project.status || "open",
+        type: "project", // You can categorize based on project category
+      };
+    });
+
+    // Get recent order history
+    const recentOrders = await ClientOrder.find({ client_id: customer_id })
+      .sort({ placed_at: -1 })
+      .limit(10)
+      .select("order_no total placed_at items status");
+
+    const recentOrderHistory = recentOrders.map((order) => {
+      const firstItem = order.items && order.items[0];
+      const deliveryTime = "7 Days"; // You can calculate based on order dates
+
+      return {
+        orderNo: order.order_no,
+        deliveryTime: deliveryTime,
+        category: "general", // You can get from item category
+        budget: order.total || 0,
+        service: firstItem?.title || "Order Items",
+        date: new Date(order.placed_at).toLocaleDateString("en-US", {
+          year: "numeric",
+          month: "short",
+          day: "2-digit",
+        }),
+      };
+    });
+
+    // Calculate customer metrics (simplified for now)
+    const completedOrders = await ClientOrder.countDocuments({
+      client_id: customer_id,
+      status: { $in: ["delivered", "completed"] },
+    });
+
+    const completionRate =
+      totalOrders > 0 ? Math.round((completedOrders / totalOrders) * 100) : 0;
+
+    const customerMetrics = [
+      {
+        label: "Order completion rate",
+        value: completionRate,
+      },
+      {
+        label: "Payment reliability",
+        value: 95, // You can implement payment reliability logic
+      },
+      {
+        label: "Repeat customer rate",
+        value: totalOrders > 1 ? 100 : 0,
+      },
+      {
+        label: "Response time",
+        value: 24, // Hours - you can calculate from messages
+      },
+      {
+        label: "Communication response",
+        value: 90, // Percentage - you can calculate from chat responses
+      },
+    ];
+
+    // Build customer info summary
+    const customerInfo = {
+      status: true,
+      totalOrders: totalOrders,
+      totalSpend: Math.round(totalSpentAmount),
+      lastOrderDate: lastOrder
+        ? new Date(lastOrder.placed_at).toLocaleDateString("en-US", {
+            year: "numeric",
+            month: "short",
+            day: "2-digit",
+          })
+        : "Never",
+      language: "English",
+      region: clientProfile?.city || "N/A",
+      email_subscription: true, // You can get from settings
+      sms_subscription: true,
+    };
+
+    const responseData = {
+      message: "Customer details retrieved successfully",
+      personalInfo,
+      stats,
+      serviceRequestsHistory,
+      recentOrderHistory,
+      customerMetrics,
+      customerInfo,
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error getting customer details:", err);
+
+    if (err.name === "CastError") {
+      return res.status(400).json({ error: "Invalid customer ID format" });
+    }
+
+    res.status(500).json({ error: "Server error" });
+  }
+};
+// @desc    Get specific supplier details for admin
+// @route   POST /admin/get_supplier
+// @access  Private (Admin Only)
+exports.getAdminSupplier = async (req, res) => {
+  try {
+    const { supplier_id } = req.body;
+
+    if (!supplier_id) {
+      return res.status(400).json({ error: "Supplier ID is required" });
+    }
+
+    // Find the supplier
+    const supplier = await User.findById(supplier_id);
+
+    if (!supplier) {
+      return res.status(404).json({ error: "Supplier not found" });
+    }
+
+    // Verify the user is a supplier
+    const isSupplier =
+      supplier.user_type === "supplier" ||
+      (supplier.accessRoles && supplier.accessRoles.includes("supplier"));
+
+    if (!isSupplier) {
+      return res.status(400).json({ error: "User is not a supplier" });
+    }
+
+    // Get supplier profile information
+    const [userProfile, storeDetails] = await Promise.all([
+      UserProfile.findOne({ user_id: supplier_id }),
+      StoreDetails.findOne({ supplier_id: supplier_id }),
+    ]);
+
+    // Get date ranges for trending calculations
+    const dateRanges = getDateRanges();
+    const {
+      currentMonthStart,
+      currentMonthEnd,
+      previousMonthStart,
+      previousMonthEnd,
+    } = dateRanges;
+
+    // Get supplier statistics
+    const [
+      currentMonthProducts,
+      previousMonthProducts,
+      totalProducts,
+      currentMonthOrders,
+      previousMonthOrders,
+      totalOrders,
+      currentMonthRevenue,
+      previousMonthRevenue,
+      totalRevenue,
+      supplierRating,
+    ] = await Promise.all([
+      Product.countDocuments({
+        supplier_id: supplier_id,
+        createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
+      }),
+      Product.countDocuments({
+        supplier_id: supplier_id,
+        createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
+      }),
+      Product.countDocuments({ supplier_id: supplier_id }),
+      Order.countDocuments({
+        supplier_id: supplier_id,
+        createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
+      }),
+      Order.countDocuments({
+        supplier_id: supplier_id,
+        createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
+      }),
+      Order.countDocuments({ supplier_id: supplier_id }),
+      Order.aggregate([
+        {
+          $match: {
+            supplier_id: supplier._id,
+            createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
+          },
+        },
+        { $group: { _id: null, total: { $sum: "$calculations.total" } } },
+      ]),
+      Order.aggregate([
+        {
+          $match: {
+            supplier_id: supplier._id,
+            createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
+          },
+        },
+        { $group: { _id: null, total: { $sum: "$calculations.total" } } },
+      ]),
+      Order.aggregate([
+        { $match: { supplier_id: supplier._id } },
+        { $group: { _id: null, total: { $sum: "$calculations.total" } } },
+      ]),
+      // Calculate average rating from completed orders (simplified)
+      Order.aggregate([
+        { $match: { supplier_id: supplier._id, status: "completed" } },
+        { $group: { _id: null, avgRating: { $avg: 4.5 } } }, // Placeholder logic
+      ]),
+    ]);
+
+    const currentRevenue = currentMonthRevenue[0]?.total || 0;
+    const previousRevenue = previousMonthRevenue[0]?.total || 0;
+    const totalRevenueAmount = totalRevenue[0]?.total || 0;
+    const rating = supplierRating[0]?.avgRating || 4.0;
+
+    // Get last order date
+    const lastOrder = await Order.findOne({ supplier_id: supplier_id })
+      .sort({ createdAt: -1 })
+      .select("createdAt");
+
+    // Build personal info
+    const personalInfo = {
+      full_name:
+        userProfile?.fullname ||
+        storeDetails?.store_name ||
+        supplier.username ||
+        "N/A",
+      status: true, // Assume active for now
+      supplier_id: supplier._id.toString(),
+      joinedDate: new Date(supplier.createdAt).toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "short",
+        day: "2-digit",
+      }),
+      bio: userProfile?.introduction || "No bio available",
+      contact: {
+        phone_number:
+          userProfile?.phone_number || storeDetails?.phone_number || "N/A",
+        email: supplier.email,
+      },
+      defaultAddress:
+        userProfile?.address || userProfile?.service_location || "N/A",
+      plan: "Standard Member", // You can implement plan logic
+      zip_code: 0, // You can add zip code field to profile
+      account_type: "supplier",
+      country: "Pakistan", // You can get from profile or settings
+    };
+
+    // Build stats with trending
+    const stats = [
+      {
+        label: "Total products",
+        value: totalProducts,
+        trendingValue: calculateTrending(
+          currentMonthProducts,
+          previousMonthProducts
+        ),
+        isPrice: false,
+        isTrending: isTrendingPositive(
+          calculateTrending(currentMonthProducts, previousMonthProducts)
+        ),
+      },
+      {
+        label: "Total orders",
+        value: totalOrders,
+        trendingValue: calculateTrending(
+          currentMonthOrders,
+          previousMonthOrders
+        ),
+        isPrice: false,
+        isTrending: isTrendingPositive(
+          calculateTrending(currentMonthOrders, previousMonthOrders)
+        ),
+      },
+      {
+        label: "Total revenue",
+        value: Math.round(totalRevenueAmount),
+        trendingValue: calculateTrending(currentRevenue, previousRevenue),
+        isPrice: true,
+        isTrending: isTrendingPositive(
+          calculateTrending(currentRevenue, previousRevenue)
+        ),
+      },
+      {
+        label: "Rating",
+        value: parseFloat(rating.toFixed(1)),
+        trendingValue: 0, // Rating trending can be complex
+        isPrice: false,
+        isTrending: true,
+      },
+    ];
+
+    // Get products inventory
+    const products = await Product.find({ supplier_id: supplier_id })
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .select("title description price quantity status createdAt");
+
+    const productsInventory = products.map((product) => {
+      let progress = 0;
+      switch (product.status) {
+        case "active":
+          progress = 100;
+          break;
+        case "draft":
+          progress = 50;
+          break;
+        default:
+          progress = 25;
+      }
+
+      return {
+        title: product.title || "Untitled Product",
+        detail: product.description || "No description available",
+        progress: progress,
+        budget: product.price || 0,
+        status: product.status || "draft",
+        type: "product", // You can categorize based on product category
+      };
+    });
+
+    // Get recent order history
+    const recentOrders = await Order.find({ supplier_id: supplier_id })
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .select("order_no calculations.total createdAt products status");
+
+    const recentOrderHistory = recentOrders.map((order) => {
+      const firstProduct = order.products && order.products[0];
+      const deliveryTime = "7 Days"; // You can calculate based on order dates
+
+      return {
+        orderNo: order.order_no,
+        deliveryTime: deliveryTime,
+        category: firstProduct?.category || "general",
+        budget: order.calculations?.total || 0,
+        service: firstProduct?.title || "Order Items",
+        date: new Date(order.createdAt).toLocaleDateString("en-US", {
+          year: "numeric",
+          month: "short",
+          day: "2-digit",
+        }),
+      };
+    });
+
+    // Calculate supplier metrics
+    const completedOrders = await Order.countDocuments({
+      supplier_id: supplier_id,
+      status: { $in: ["completed", "delivered"] },
+    });
+
+    const onTimeDelivery = await Order.countDocuments({
+      supplier_id: supplier_id,
+      status: "delivered",
+      // You can add delivery date comparison logic here
+    });
+
+    const fulfillmentRate =
+      totalOrders > 0 ? Math.round((completedOrders / totalOrders) * 100) : 0;
+    const onTimeRate =
+      completedOrders > 0
+        ? Math.round((onTimeDelivery / completedOrders) * 100)
+        : 0;
+
+    const supplierMetrics = [
+      {
+        label: "Order fulfillment rate",
+        value: fulfillmentRate,
+      },
+      {
+        label: "On-time delivery",
+        value: onTimeRate,
+      },
+      {
+        label: "Product quality rating",
+        value: Math.round(rating * 20), // Convert 5-star to percentage
+      },
+      {
+        label: "Customer satisfactions",
+        value: 95, // You can calculate from reviews/feedback
+      },
+      {
+        label: "Communication response",
+        value: 90, // You can calculate from chat response times
+      },
+    ];
+
+    // Build supplier info summary
+    const supplierInfo = {
+      status: true,
+      totalOrders: totalOrders,
+      totalProducts: totalProducts,
+      lastOrderDate: lastOrder
+        ? new Date(lastOrder.createdAt).toLocaleDateString("en-US", {
+            year: "numeric",
+            month: "short",
+            day: "2-digit",
+          })
+        : "Never",
+      language: "English",
+      region: userProfile?.service_location || "N/A",
+      email_verify: supplier.isEmailVerified,
+      tax_no: storeDetails?.reg_number || "N/A",
+      timezone: storeDetails?.time_zone || "Asia/Karachi(PKT)",
+      store_currency: storeDetails?.display_currency || "PKR",
+    };
+
+    const responseData = {
+      message: "Supplier details retrieved successfully",
+      personalInfo,
+      stats,
+      productsInventory,
+      recentOrderHistory,
+      supplierMetrics,
+      supplierInfo,
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error getting supplier details:", err);
+
+    if (err.name === "CastError") {
+      return res.status(400).json({ error: "Invalid supplier ID format" });
+    }
+
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Get all suppliers data for admin
+// @route   GET /admin/get_suppliers
+// @access  Private (Admin Only)
+exports.getAdminSuppliers = async (req, res) => {
+  try {
+    const dateRanges = getDateRanges();
+    const {
+      currentMonthStart,
+      currentMonthEnd,
+      previousMonthStart,
+      previousMonthEnd,
+    } = dateRanges;
+
+    // 1. Total Suppliers (users with user_type 'supplier' or accessRoles containing 'supplier')
+    const totalSuppliersCurrentMonth = await User.countDocuments({
+      $or: [{ user_type: "supplier" }, { accessRoles: { $in: ["supplier"] } }],
+      createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
+    });
+
+    const totalSuppliersPreviousMonth = await User.countDocuments({
+      $or: [{ user_type: "supplier" }, { accessRoles: { $in: ["supplier"] } }],
+      createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
+    });
+
+    const totalSuppliersOverall = await User.countDocuments({
+      $or: [{ user_type: "supplier" }, { accessRoles: { $in: ["supplier"] } }],
+    });
+
+    // 2. Active Suppliers (suppliers who have products or received orders in last 30 days)
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+
+    // Get active suppliers from products and orders
+    const [activeSuppliersFromProducts, activeSuppliersFromOrders] =
+      await Promise.all([
+        Product.distinct("supplier_id", {
+          createdAt: { $gte: thirtyDaysAgo },
+        }),
+        Order.distinct("supplier_id", {
+          createdAt: { $gte: thirtyDaysAgo },
+        }),
+      ]);
+
+    const [
+      previousActiveSuppliersFromProducts,
+      previousActiveSuppliersFromOrders,
+    ] = await Promise.all([
+      Product.distinct("supplier_id", {
+        createdAt: { $gte: sixtyDaysAgo, $lt: thirtyDaysAgo },
+      }),
+      Order.distinct("supplier_id", {
+        createdAt: { $gte: sixtyDaysAgo, $lt: thirtyDaysAgo },
+      }),
+    ]);
+
+    // Combine and deduplicate active suppliers
+    const activeSuppliersSet = new Set([
+      ...activeSuppliersFromProducts,
+      ...activeSuppliersFromOrders,
+    ]);
+    const previousActiveSuppliersSet = new Set([
+      ...previousActiveSuppliersFromProducts,
+      ...previousActiveSuppliersFromOrders,
+    ]);
+
+    const activeSuppliersCount = activeSuppliersSet.size;
+    const previousActiveSuppliersCount = previousActiveSuppliersSet.size;
+
+    // 3. Supplier Stores (suppliers who have set up store details)
+    const supplierStoresCurrentMonth = await StoreDetails.countDocuments({
+      updatedAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
+    });
+
+    const supplierStoresPreviousMonth = await StoreDetails.countDocuments({
+      updatedAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
+    });
+
+    const supplierStoresOverall = await StoreDetails.countDocuments({});
+
+    // 4. Pending Verification (suppliers with unverified emails)
+    const pendingVerifyCurrentMonth = await User.countDocuments({
+      $or: [{ user_type: "supplier" }, { accessRoles: { $in: ["supplier"] } }],
+      isEmailVerified: false,
+      createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
+    });
+
+    const pendingVerifyPreviousMonth = await User.countDocuments({
+      $or: [{ user_type: "supplier" }, { accessRoles: { $in: ["supplier"] } }],
+      isEmailVerified: false,
+      createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
+    });
+
+    const pendingVerifyOverall = await User.countDocuments({
+      $or: [{ user_type: "supplier" }, { accessRoles: { $in: ["supplier"] } }],
+      isEmailVerified: false,
+    });
+
+    // 5. Get all suppliers with their details
+    const suppliers = await User.find({
+      $or: [{ user_type: "supplier" }, { accessRoles: { $in: ["supplier"] } }],
+    })
+      .select("_id username email createdAt isEmailVerified")
+      .sort({ createdAt: -1 })
+      .limit(100);
+
+    // Get detailed supplier data
+    const formattedSuppliers = await Promise.all(
+      suppliers.map(async (supplier) => {
+        // Get supplier profile information
+        const [userProfile, storeDetails] = await Promise.all([
+          UserProfile.findOne({ user_id: supplier._id }),
+          StoreDetails.findOne({ supplier_id: supplier._id }),
+        ]);
+
+        // Get phone number and name from profile
+        const phone_number =
+          userProfile?.phone_number || storeDetails?.phone_number || "N/A";
+        const full_name =
+          userProfile?.fullname ||
+          storeDetails?.store_name ||
+          supplier.username ||
+          "N/A";
+        const location =
+          userProfile?.address || userProfile?.service_location || "N/A";
+
+        // Determine supplier status (active if they have products or recent orders)
+        const [hasProducts, hasRecentOrders] = await Promise.all([
+          Product.countDocuments({ supplier_id: supplier._id }),
+          Order.countDocuments({
+            supplier_id: supplier._id,
+            createdAt: { $gte: thirtyDaysAgo },
+          }),
+        ]);
+
+        const isActive = hasProducts > 0 || hasRecentOrders > 0;
+
+        return {
+          supplier: {
+            id: supplier._id.toString(),
+            full_name: full_name,
+            email: supplier.email,
+            phone_number: phone_number,
+          },
+          email_verify: supplier.isEmailVerified,
+          status: isActive,
+          location: location,
+          join_date: supplier.createdAt.toISOString(),
+        };
+      })
+    );
+
+    // 6. Recent Activities
+    const activities = [];
+
+    // Get recent supplier registrations
+    const recentSuppliers = await User.find({
+      $or: [{ user_type: "supplier" }, { accessRoles: { $in: ["supplier"] } }],
+    })
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .select("username createdAt");
+
+    recentSuppliers.forEach((supplier) => {
+      activities.push({
+        title: "New Supplier Registration",
+        detail: `${supplier.username} joined as a supplier`,
+        type: "supplier_registration",
+        time: supplier.createdAt,
+      });
+    });
+
+    // Get recent products added by suppliers
+    const recentProducts = await Product.find({})
+      .populate("supplier_id", "username")
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .select("title supplier_id price createdAt");
+
+    recentProducts.forEach((product) => {
+      activities.push({
+        title: "New Product Added",
+        detail: `${
+          product.supplier_id?.username || "Supplier"
+        } added product "${product.title}" for $${product.price}`,
+        type: "product_added",
+        time: product.createdAt,
+      });
+    });
+
+    // Get recent orders to suppliers
+    const recentOrders = await Order.find({})
+      .populate("supplier_id", "username")
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .select("order_no supplier_id calculations.total createdAt");
+
+    recentOrders.forEach((order) => {
+      activities.push({
+        title: "New Order Received",
+        detail: `${order.supplier_id?.username || "Supplier"} received order ${
+          order.order_no
+        } worth $${order.calculations?.total || 0}`,
+        type: "order_received",
+        time: order.createdAt,
+      });
+    });
+
+    // Get recent store setups
+    const recentStores = await StoreDetails.find({})
+      .populate("supplier_id", "username")
+      .sort({ updatedAt: -1 })
+      .limit(5)
+      .select("store_name supplier_id updatedAt");
+
+    recentStores.forEach((store) => {
+      activities.push({
+        title: "Store Setup Completed",
+        detail: `${store.supplier_id?.username || "Supplier"} set up store "${
+          store.store_name
+        }"`,
+        type: "store_setup",
+        time: store.updatedAt,
+      });
+    });
+
+    // Sort activities by time and limit to 20
+    activities.sort((a, b) => new Date(b.time) - new Date(a.time));
+    const sortedActivities = activities.slice(0, 20);
+
+    // Build stats object
+    const stats = {
+      total_suppliers: {
+        value: totalSuppliersOverall,
+        trendingValue: calculateTrending(
+          totalSuppliersCurrentMonth,
+          totalSuppliersPreviousMonth
+        ),
+        isTrending: isTrendingPositive(
+          calculateTrending(
+            totalSuppliersCurrentMonth,
+            totalSuppliersPreviousMonth
+          )
+        ),
+      },
+      active_suppliers: {
+        value: activeSuppliersCount,
+        trendingValue: calculateTrending(
+          activeSuppliersCount,
+          previousActiveSuppliersCount
+        ),
+        isTrending: isTrendingPositive(
+          calculateTrending(activeSuppliersCount, previousActiveSuppliersCount)
+        ),
+      },
+      supplier_stores: {
+        value: supplierStoresOverall,
+        trendingValue: calculateTrending(
+          supplierStoresCurrentMonth,
+          supplierStoresPreviousMonth
+        ),
+        isTrending: isTrendingPositive(
+          calculateTrending(
+            supplierStoresCurrentMonth,
+            supplierStoresPreviousMonth
+          )
+        ),
+      },
+      pending_verify: {
+        value: pendingVerifyOverall,
+        trendingValue: calculateTrending(
+          pendingVerifyCurrentMonth,
+          pendingVerifyPreviousMonth
+        ),
+        isTrending: isTrendingPositive(
+          calculateTrending(
+            pendingVerifyCurrentMonth,
+            pendingVerifyPreviousMonth
+          )
+        ),
+      },
+    };
+
+    const responseData = {
+      message: "Admin suppliers data retrieved successfully",
+      stats,
+      suppliers: formattedSuppliers,
+      activities: sortedActivities,
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error getting admin suppliers data:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Toggle user account status (active/inactive)
+// @route   POST /admin/user_account_status_toggle
+// @access  Private (Admin Only)
+exports.toggleUserAccountStatus = async (req, res) => {
+  try {
+    const { user_id, status } = req.body;
+
+    // Validate input
+    if (!user_id) {
+      return res.status(400).json({ error: "User ID is required" });
+    }
+
+    if (typeof status !== "boolean") {
+      return res.status(400).json({ error: "Status must be true or false" });
+    }
+
+    // Find the user
+    const user = await User.findById(user_id);
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Prevent admin from deactivating themselves
+    if (user_id === req.user.id.toString()) {
+      return res
+        .status(400)
+        .json({ error: "You cannot change your own account status" });
+    }
+
+    // Prevent deactivating other admins (optional security measure)
+    if (user.isAdmin && !status) {
+      return res
+        .status(400)
+        .json({ error: "Cannot deactivate admin accounts" });
+    }
+
+    // Use existing isEmailVerified field to control account status
+    // true = active account, false = deactivated account
+    user.isEmailVerified = status;
+
+    await user.save();
+
+    // Get user profile for better logging
+    const userProfile = await UserProfile.findOne({ user_id: user_id });
+    const displayName = userProfile?.fullname || user.username;
+
+    // Log the action
+    console.log(
+      `Admin ${req.user.username} ${
+        status ? "activated" : "deactivated"
+      } user account "${displayName}" (${
+        user.user_type
+      }) using email verification status`
+    );
+
+    const responseData = {
+      message: `User account has been ${
+        status ? "activated" : "deactivated"
+      } successfully`,
+      user_id: user_id,
+      username: user.username,
+      user_type: user.user_type,
+      new_status: status,
+      email_verified: status,
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error toggling user account status:", err);
+
+    // Handle invalid ObjectId
+    if (err.name === "CastError") {
+      return res.status(400).json({ error: "Invalid user ID format" });
+    }
+
     res.status(500).json({ error: "Server error" });
   }
 };
