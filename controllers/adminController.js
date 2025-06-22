@@ -1,5 +1,7 @@
 // controllers/adminController.js (Fixed version for customer_id string issue)
 const User = require("../models/User");
+const UserProfile = require("../models/UserProfile");
+const Job = require("../models/Job");
 const Order = require("../models/Order");
 const ClientOrder = require("../models/ClientOrder");
 const Customer = require("../models/Customer");
@@ -1195,6 +1197,152 @@ exports.getAdminProductDetails = async (req, res) => {
     console.error("Error getting product details:", err);
     if (err.name === "CastError") {
       return res.status(400).json({ error: "Invalid product ID format" });
+    }
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Get all services for admin
+// @route   GET /admin/get_services
+// @access  Private (Admin Only)
+exports.getAdminServices = async (req, res) => {
+  try {
+    // Get all services with populated service provider details
+    const services = await Service.find({})
+      .populate({
+        path: "user",
+        select: "username email user_type createdAt",
+        model: "User",
+      })
+      .sort({ createdAt: -1 });
+
+    // Format services according to specification
+    const formattedServices = await Promise.all(
+      services.map(async (service) => {
+        // Get the first image from service_images array or use a default
+        const image =
+          service.service_images && service.service_images.length > 0
+            ? service.service_images[0]
+            : "/uploads/services/default-service.jpg";
+
+        // Determine if service is top-rated (e.g., rating >= 4.5 and at least 10 reviews)
+        const isRated = service.rating >= 4.5 && service.reviews_count >= 10;
+
+        // Get service provider's profile for location
+        let location = "Not specified";
+        if (service.user) {
+          const userProfile = await UserProfile.findOne({
+            user_id: service.user._id,
+          }).select("service_location address");
+
+          location =
+            userProfile?.service_location ||
+            userProfile?.address ||
+            "Not specified";
+        }
+
+        return {
+          id: service._id.toString(),
+          image: image,
+          title: service.service_title || "Untitled Service",
+          category: service.service_category || "Uncategorized",
+          detail: service.service_description || "No description available",
+          rating: service.rating || 0,
+          location: location,
+          rating_count: service.reviews_count || 0,
+          isRated: isRated,
+          service_provider: service.user || null,
+        };
+      })
+    );
+
+    const responseData = {
+      message: "Services retrieved successfully",
+      services: formattedServices,
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error getting admin services data:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Get service details for admin
+// @route   POST /admin/get_service
+// @access  Private (Admin Only)
+exports.getAdminServiceDetails = async (req, res) => {
+  try {
+    const { service_id } = req.body;
+
+    if (!service_id) {
+      return res.status(400).json({ error: "Service ID is required" });
+    }
+
+    // Find the service with populated user details
+    const service = await Service.findById(service_id).populate({
+      path: "user",
+      select: "username email user_type",
+      model: "User",
+    });
+
+    if (!service) {
+      return res.status(404).json({ error: "Service not found" });
+    }
+
+    // Get service provider's profile for location
+    let location = "Not specified";
+    if (service.user) {
+      const userProfile = await UserProfile.findOne({
+        user_id: service.user._id,
+      }).select("service_location address");
+
+      location =
+        userProfile?.service_location ||
+        userProfile?.address ||
+        "Not specified";
+    }
+
+    // Get all jobs/requests for this service to calculate pricing
+    const jobs = await Job.find({
+      service: service_id,
+      status: { $in: ["completed", "in_progress", "accepted"] },
+    });
+
+    // Calculate average price from completed jobs
+    let price = 0;
+    if (jobs.length > 0) {
+      const totalPrice = jobs.reduce((sum, job) => sum + (job.price || 0), 0);
+      price = totalPrice / jobs.length;
+    }
+
+    // Format the service details according to specification
+    const formattedService = {
+      title: service.service_title || "Untitled Service",
+      price: price || 0, // Average price from jobs
+      description: service.service_description || "No description available",
+      about_service:
+        service.service_description || "No additional information available",
+      rating: service.rating || 0,
+      average_rating: service.rating || 0, // Same as rating
+      no_of_reviews: service.reviews_count || 0,
+      images: service.service_images || [],
+      category: service.service_category || "Uncategorized",
+      location: location,
+    };
+
+    const responseData = {
+      message: "Service details retrieved successfully",
+      service: formattedService,
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error getting service details:", err);
+    if (err.name === "CastError") {
+      return res.status(400).json({ error: "Invalid service ID format" });
     }
     res.status(500).json({ error: "Server error" });
   }

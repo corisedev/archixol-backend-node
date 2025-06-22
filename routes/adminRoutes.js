@@ -9,6 +9,8 @@ const {
   getOrderDetails,
   getAdminProducts,
   getAdminProductDetails,
+  getAdminServices,
+  getAdminServiceDetails,
 } = require("../controllers/adminController");
 
 // Import middleware
@@ -32,5 +34,11 @@ router.get("/get_products", getAdminProducts);
 
 // Admin Product Details Route
 router.post("/get_product_details", decryptRequest, getAdminProductDetails);
+
+// Admin Services Route
+router.get("/get_services", getAdminServices);
+
+// Admin Service Details Route
+router.post("/get_service", decryptRequest, getAdminServiceDetails);
 
 module.exports = router;
