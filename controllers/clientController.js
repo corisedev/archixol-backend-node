@@ -942,6 +942,7 @@ exports.getJobProposals = async (req, res) => {
       type: projectJob.type,
       urgent: projectJob.urgent,
       created_at: projectJob.createdAt,
+      category: projectJob.category,
       total_proposals: validProposals.length,
     };
 

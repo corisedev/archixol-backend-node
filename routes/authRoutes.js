@@ -14,6 +14,15 @@ const {
   becomeServiceProvider,
 } = require("../controllers/authController");
 
+// Import role switch controller
+const { switchRole } = require("../controllers/roleSwitchController");
+
+// Import role switch validation
+const {
+  validateRoleSwitch,
+  validate: validateRole,
+} = require("../utils/roleSwitchValidation");
+
 // Import notification controllers
 const {
   getNotifications,
@@ -63,6 +72,19 @@ router.get("/me", protect, getCurrentUser);
 router.post("/become_company", protect, becomeCompany);
 router.post("/become_a_supplier", protect, becomeSupplier);
 router.post("/become_a_service_provider", protect, becomeServiceProvider);
+
+// ==================== NEW ROLE SWITCH ROUTE ====================
+
+// @desc    Switch user's active role
+// @route   POST /account/role_switch
+// @access  Private
+router.post(
+  "/role_switch",
+  protect,
+  validateRoleSwitch,
+  validateRole,
+  switchRole
+);
 
 // ==================== NOTIFICATION ROUTES ====================
 

@@ -1,4 +1,4 @@
-// server.js (updated)
+// server.js (updated with site builder routes)
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
@@ -49,6 +49,7 @@ app.use("/uploads/profile", require("./routes/profileUploadRoutes"));
 app.use("/uploads/service", require("./routes/serviceUploadRoutes"));
 app.use("/uploads/chat", require("./routes/chatUploadRoutes"));
 app.use("/public", require("./routes/publicProfileRoutes"));
+app.use("/public", require("./routes/publicStoreRoutes"));
 app.use("/supplier", require("./routes/supplierRoutes"));
 app.use("/supplier", require("./routes/settingsRoutes"));
 app.use("/chat", require("./routes/chatRoutes"));

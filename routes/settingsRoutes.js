@@ -1,4 +1,4 @@
-// routes/settingsRoutes.js
+// routes/settingsRoutes.js (Updated with Site Builder routes)
 const express = require("express");
 const router = express.Router();
 const CryptoJS = require("crypto-js");
@@ -36,6 +36,28 @@ const {
   resendRecoveryEmail,
   addRecoveryPhone,
 } = require("../controllers/settingsController");
+
+// Import site builder controllers
+const {
+  updateSiteBuilder,
+  getSiteBuilder,
+  getPublicStore,
+  toggleStorePublish,
+} = require("../controllers/siteBuilderController");
+
+// Import site builder middleware
+const {
+  uploadSiteBuilderImages,
+  handleUploadErrors: handleSiteBuilderUploadErrors,
+  processSiteBuilderData,
+} = require("../middleware/siteBuilderUpload");
+
+// Import site builder validation
+const {
+  validateSiteBuilderUpdate,
+  validateTogglePublish,
+  validate: validateSiteBuilder,
+} = require("../utils/siteBuilderValidation");
 
 const {
   uploadProfileImage,
@@ -145,10 +167,40 @@ const processStoreDetailsData = (req, res, next) => {
   }
 };
 
+// ==================== SITE BUILDER ROUTES ====================
+
+// @desc    Update site builder configuration
+// @route   POST /supplier/site_builder
+// @access  Private (Supplier Only)
+router.post(
+  "/site_builder",
+  uploadSiteBuilderImages,
+  handleSiteBuilderUploadErrors,
+  processSiteBuilderData,
+  validateSiteBuilderUpdate,
+  validateSiteBuilder,
+  updateSiteBuilder
+);
+
+// @desc    Get site builder configuration
+// @route   GET /supplier/site_builder
+// @access  Private (Supplier Only)
+router.get("/site_builder", getSiteBuilder);
+
+// @desc    Toggle store publish status
+// @route   POST /supplier/site_builder/publish
+// @access  Private (Supplier Only)
+router.post(
+  "/site_builder/publish",
+  validateTogglePublish,
+  validateSiteBuilder,
+  toggleStorePublish
+);
+
+// ==================== EXISTING STORE SETTINGS ROUTES ====================
+
 // Store details routes
 router.get("/store_details", getStoreDetails);
-
-// In your routes section:
 router.post(
   "/store_details",
   uploadStoreLogo,
