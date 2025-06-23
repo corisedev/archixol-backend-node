@@ -1232,7 +1232,6 @@ exports.getAdminServices = async (req, res) => {
         const isRated = service.rating >= 4.5 && service.reviews_count >= 10;
 
         // Get service provider's profile for location
-        let location = "Not specified";
         if (service.user) {
           const userProfile = await UserProfile.findOne({
             user_id: service.user._id,
@@ -1251,7 +1250,7 @@ exports.getAdminServices = async (req, res) => {
           category: service.service_category || "Uncategorized",
           detail: service.service_description || "No description available",
           rating: service.rating || 0,
-          location: location,
+          location: service.location || "Not Specified",
           rating_count: service.reviews_count || 0,
           isRated: isRated,
           service_provider: service.user || null,
@@ -1416,9 +1415,7 @@ exports.toggleServiceStatus = async (req, res) => {
   }
 };
 
-// @desc    Get all customers data for admin
-// @route   GET /admin/get_customers
-// @access  Private (Admin Only)
+// Updated getAdminCustomers function
 exports.getAdminCustomers = async (req, res) => {
   try {
     const dateRanges = getDateRanges();
@@ -1521,13 +1518,32 @@ exports.getAdminCustomers = async (req, res) => {
     const customers = await User.find({
       $or: [{ user_type: "client" }, { accessRoles: { $in: ["client"] } }],
     })
-      .select("_id username email createdAt")
+      .select("_id username email createdAt isEmailVerified supplier_id")
       .sort({ createdAt: -1 })
       .limit(100);
 
     // Get detailed customer data
     const formattedCustomers = await Promise.all(
       customers.map(async (customer) => {
+        const projectJobs = await ProjectJob.find({ client_id: customer._id })
+          .populate({
+            path: "selected_provider",
+            select: "username user_type email",
+          })
+          .sort({ createdAt: -1 })
+          .lean();
+
+        const totalInvestments = projectJobs.reduce((sum, project) => {
+          // Include completed projects (money was spent) and in-progress projects (money is committed)
+          if (
+            project.status === "completed" ||
+            project.status === "pending_client_approval" ||
+            project.status === "in_progress"
+          ) {
+            return sum + (project.budget || 0);
+          }
+          return sum; // Important: Return the sum even if the condition is false!
+        }, 0);
         // Get profile information
         const clientProfile = await ClientProfile.findOne({
           user_id: customer._id,
@@ -1561,9 +1577,9 @@ exports.getAdminCustomers = async (req, res) => {
           },
           order_count: orderCount,
           project_count: projectCount,
-          total_investment: orderTotal[0]?.total || 0,
+          total_investment: totalInvestments,
           join_date: customer.createdAt.toISOString(),
-          status: "active", // You can implement logic to determine inactive customers
+          status: customer.isEmailVerified, // Changed from static "active" to based on email verification
         };
       })
     );
@@ -1687,11 +1703,7 @@ exports.getAdminCustomers = async (req, res) => {
   }
 };
 
-// controllers/adminController.js - Add this function to existing adminController.js
-
-// @desc    Get specific customer details for admin
-// @route   POST /admin/get_customer
-// @access  Private (Admin Only)
+// Updated getAdminCustomer function
 exports.getAdminCustomer = async (req, res) => {
   try {
     const { customer_id } = req.body;
@@ -1797,7 +1809,7 @@ exports.getAdminCustomer = async (req, res) => {
     // Build personal info
     const personalInfo = {
       full_name: clientProfile?.full_name || customer.username || "N/A",
-      status: true, // Assume active for now
+      status: customer.isEmailVerified, // Changed from static true to based on email verification
       customer_id: customer._id.toString(),
       joinedDate: new Date(customer.createdAt).toLocaleDateString("en-US", {
         year: "numeric",
@@ -1816,6 +1828,26 @@ exports.getAdminCustomer = async (req, res) => {
       language: "English", // You can get this from customer settings
     };
 
+    const projectJobs = await ProjectJob.find({ client_id: customer_id })
+      .populate({
+        path: "selected_provider",
+        select: "username user_type email",
+      })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const totalJobAmount = projectJobs.reduce((sum, project) => {
+      // Include completed projects (money was spent) and in-progress projects (money is committed)
+      if (
+        project.status === "completed" ||
+        project.status === "pending_client_approval" ||
+        project.status === "in_progress"
+      ) {
+        return sum + (project.budget || 0);
+      }
+      return sum; // Important: Return the sum even if the condition is false!
+    }, 0);
+
     // Build stats with trending
     const stats = [
       {
@@ -1831,17 +1863,8 @@ exports.getAdminCustomer = async (req, res) => {
         ),
       },
       {
-        label: "Total amount spent",
+        label: "Total order amount",
         value: Math.round(totalSpentAmount),
-        trendingValue: calculateTrending(currentSpent, previousSpent),
-        isPrice: true,
-        isTrending: isTrendingPositive(
-          calculateTrending(currentSpent, previousSpent)
-        ),
-      },
-      {
-        label: "Average order value",
-        value: Math.round(averageOrderValue),
         trendingValue: calculateTrending(averageOrderValue, averageOrderValue), // Simple for now
         isPrice: true,
         isTrending: true,
@@ -1856,6 +1879,16 @@ exports.getAdminCustomer = async (req, res) => {
         isPrice: false,
         isTrending: isTrendingPositive(
           calculateTrending(currentMonthProjects, previousMonthProjects)
+        ),
+      },
+
+      {
+        label: "Total job amount",
+        value: Math.round(totalJobAmount),
+        trendingValue: calculateTrending(currentSpent, previousSpent),
+        isPrice: true,
+        isTrending: isTrendingPositive(
+          calculateTrending(currentSpent, previousSpent)
         ),
       },
     ];
@@ -1950,7 +1983,7 @@ exports.getAdminCustomer = async (req, res) => {
 
     // Build customer info summary
     const customerInfo = {
-      status: true,
+      status: customer.isEmailVerified, // Changed from static true to based on email verification
       totalOrders: totalOrders,
       totalSpend: Math.round(totalSpentAmount),
       lastOrderDate: lastOrder
@@ -1988,6 +2021,7 @@ exports.getAdminCustomer = async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 };
+
 // @desc    Get specific supplier details for admin
 // @route   POST /admin/get_supplier
 // @access  Private (Admin Only)

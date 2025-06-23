@@ -21,11 +21,11 @@ exports.placeOrder = async (req, res) => {
       address,
       apartment,
       city,
-      country,
+      country = "United States",
       province,
       postalCode,
       phone,
-      shippingMethod,
+      shippingMethod = "cash_on_delivery", // Always cash_on_delivery as specified
       discountCode,
       items,
       subtotal,
@@ -122,17 +122,11 @@ exports.placeOrder = async (req, res) => {
         units: product.units,
         media: product.media,
         qty: item.quantity, // Ordered quantity
+        variants: item.variants || [], // Include variant details if provided
       });
 
       supplierGroups[supplierId].subtotal += itemTotal;
     }
-
-    // // Validate total matches calculated value
-    // if (Math.abs(totalOrderValue - subtotal) > 0.01) {
-    //   return res.status(400).json({
-    //     error: "Subtotal does not match calculated total",
-    //   });
-    // }
 
     const createdOrders = [];
 
@@ -160,7 +154,7 @@ exports.placeOrder = async (req, res) => {
       // Create the order using the existing Order model
       const order = await Order.create({
         supplier_id: supplierId,
-        customer_id: customer._id, // Use the customer ID
+        customer_id: customer._id,
         products: orderData.items,
         calculations: {
           subtotal: orderData.subtotal,
@@ -178,16 +172,16 @@ exports.placeOrder = async (req, res) => {
             province ? province + ", " : ""
           }${country} ${postalCode}`,
         },
-        notes: discountCode ? `Discount code applied: ${discountCode}` : "",
-        market_price: "USD", // Default currency
-        tags: ["client_order"], // Tag to identify client orders
-        channel: "Online Store", // Different from supplier's "Offline Store"
-        payment_due_later: shippingMethod === "cash_on_delivery",
+        market_price: "USD",
+        tags: ["client_order"],
+        channel: "Online Store",
+        payment_due_later: true, // Always true for cash_on_delivery
         shipping_address: `${address}${
           apartment ? `, ${apartment}` : ""
         }, ${city}, ${province ? province + ", " : ""}${country} ${postalCode}`,
-        bill_paid: 0, // Initially not paid
-        // Store customer details in notes for easy access
+        bill_paid: 0,
+        status: "pending", // Set initial status as pending
+        payment_status: false, // Not paid initially for COD
         notes: JSON.stringify({
           customer_details: {
             email,
@@ -203,7 +197,8 @@ exports.placeOrder = async (req, res) => {
             shippingMethod,
             discountCode,
           },
-          discount_code: discountCode,
+          discount_code: discountCode || "",
+          order_placed_at: new Date(),
         }),
       });
 
@@ -216,11 +211,22 @@ exports.placeOrder = async (req, res) => {
         }
       }
 
+      // Get supplier details for response
+      const supplier = await User.findById(supplierId).select("username email");
+
       createdOrders.push({
         order_id: order._id,
         order_no: order.order_no,
         supplier_id: supplierId,
+        supplier_name: supplier?.username || "Unknown Supplier",
         total: orderTotal,
+        status: order.status,
+        payment_method: "cash_on_delivery",
+        estimated_delivery: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000)
+          .toISOString()
+          .split("T")[0], // 5 days from now
+        items_count: orderData.items.length,
+        created_at: order.createdAt,
       });
     }
 
@@ -240,9 +246,26 @@ exports.placeOrder = async (req, res) => {
 
     const responseData = {
       message: "Order placed successfully",
-      orders: createdOrders,
-      total_orders: createdOrders.length,
-      grand_total: total,
+      order_id:
+        createdOrders.length === 1
+          ? createdOrders[0].order_id
+          : createdOrders.map((o) => o.order_id),
+      order_details: {
+        total_orders: createdOrders.length,
+        grand_total: total,
+        payment_method: "cash_on_delivery",
+        orders: createdOrders,
+        customer_info: {
+          name: `${firstName} ${lastName}`,
+          email: email,
+          phone: phone,
+          shipping_address: `${address}${
+            apartment ? `, ${apartment}` : ""
+          }, ${city}, ${
+            province ? province + ", " : ""
+          }${country} ${postalCode}`,
+        },
+      },
     };
 
     const encryptedData = encryptData(responseData);

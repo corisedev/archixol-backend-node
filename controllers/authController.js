@@ -130,6 +130,7 @@ exports.login = [
         username: user.username,
         firstLogin: isFirstLogin,
         accessRoles: user.accessRoles,
+        isVerify: user.user_type === "admin" ? true : user.isEmailVerified,
         fullname: userProfile ? userProfile.fullname : null,
         profile_img: userProfile ? userProfile.profile_img : "",
       };

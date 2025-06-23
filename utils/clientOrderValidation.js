@@ -165,3 +165,11 @@ exports.validate = (req, res, next) => {
   }
   next();
 };
+
+exports.validateGetConfirmedOrderDetail = [
+  body("order_id")
+    .notEmpty()
+    .withMessage("Order ID is required")
+    .isMongoId()
+    .withMessage("Invalid order ID format"),
+];

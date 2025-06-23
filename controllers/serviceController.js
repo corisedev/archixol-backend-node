@@ -275,6 +275,7 @@ exports.createService = async (req, res) => {
       service_process,
       service_feature,
       service_tags,
+      location,
     } = req.body;
 
     console.log("Creating service with data:", req.body);
@@ -314,6 +315,7 @@ exports.createService = async (req, res) => {
       service_process: service_process || [],
       service_feature: service_feature || [],
       service_tags: service_tags || [],
+      location: location || "",
     });
 
     // Format response with consistent ID
@@ -329,6 +331,7 @@ exports.createService = async (req, res) => {
       service_feature: service.service_feature,
       service_tags: service.service_tags,
       created_at: service.createdAt,
+      location: service.location,
       updated_at: service.updatedAt,
     };
 

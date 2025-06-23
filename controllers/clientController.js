@@ -1740,3 +1740,140 @@ exports.completeProject = async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 };
+
+// @desc    Get confirmed order details
+// @route   POST /client/get_confrim_order_detail
+// @access  Private (Client Only)
+exports.getConfirmedOrderDetail = async (req, res) => {
+  try {
+    const clientId = req.user.id;
+    const { order_id } = req.body;
+
+    if (!order_id) {
+      return res.status(400).json({ error: "Order ID is required" });
+    }
+
+    // Get user details to verify order access
+    const user = await User.findById(clientId);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Find customers created for orders by this client's email
+    const customers = await Customer.find({ email: user.email });
+    const customerIds = customers.map((customer) => customer._id);
+
+    // Find the order for these customers
+    const order = await Order.findOne({
+      _id: order_id,
+      customer_id: { $in: customerIds },
+    })
+      .populate({
+        path: "supplier_id",
+        select: "username email",
+      })
+      .populate({
+        path: "customer_id",
+        select: "first_name last_name email phone_number default_address",
+      })
+      .lean();
+
+    if (!order) {
+      return res
+        .status(404)
+        .json({ error: "Order not found or access denied" });
+    }
+
+    // Check if order is confirmed (not pending)
+    if (order.status === "pending") {
+      return res.status(400).json({ error: "Order is not yet confirmed" });
+    }
+
+    // Parse customer details from notes if available
+    let customerDetails = {};
+    try {
+      const notesData = JSON.parse(order.notes || "{}");
+      customerDetails = notesData.customer_details || {};
+    } catch (e) {
+      customerDetails = {};
+    }
+
+    // Format items according to the required structure
+    const formattedItems = order.products.map((item) => ({
+      id: item.product_id || item.id || item._id,
+      name: item.title,
+      price: item.price,
+      quantity: item.qty,
+      image: item.media && item.media.length > 0 ? item.media[0] : "",
+      color:
+        (item.variants &&
+          item.variants.find((v) => v.option_name === "color")
+            ?.option_values) ||
+        "",
+      size:
+        (item.variants &&
+          item.variants.find((v) => v.option_name === "size")?.option_values) ||
+        "",
+    }));
+
+    // Parse shipping address
+    const shippingAddress =
+      order.calculations?.shippingAddress || order.shipping_address || "";
+    const addressParts = shippingAddress.split(", ");
+
+    // Extract address components (this is a basic parser, adjust based on your address format)
+    const parseAddress = (addressString) => {
+      const parts = addressString.split(", ");
+      return {
+        name:
+          customerDetails.firstName && customerDetails.lastName
+            ? `${customerDetails.firstName} ${customerDetails.lastName}`
+            : `${order.customer_id?.first_name || ""} ${
+                order.customer_id?.last_name || ""
+              }`.trim(),
+        street: parts[0] || "",
+        city: customerDetails.city || parts[parts.length - 4] || "",
+        state: customerDetails.province || parts[parts.length - 3] || "",
+        zip: customerDetails.postalCode || parts[parts.length - 1] || "",
+        country:
+          customerDetails.country || parts[parts.length - 2] || "United States",
+      };
+    };
+
+    // Estimate delivery date (add 3-7 business days from order date)
+    const orderDate = new Date(order.createdAt);
+    const estimatedDeliveryDate = new Date(orderDate);
+    estimatedDeliveryDate.setDate(orderDate.getDate() + 5); // 5 days average
+
+    // Format the order details according to required structure
+    const orderDetails = {
+      id: order._id,
+      date: order.createdAt,
+      status: order.status,
+      items: formattedItems,
+      shipping: {
+        method: customerDetails.shippingMethod || "cash_on_delivery",
+        cost: 0, // Shipping cost calculation if available
+        address: parseAddress(shippingAddress),
+        estimatedDelivery: estimatedDeliveryDate.toISOString().split("T")[0], // YYYY-MM-DD format
+      },
+      payment: {
+        method: "COD", // Always Cash on Delivery as specified
+        total: order.calculations?.total || 0,
+        subtotal: order.calculations?.subtotal || 0,
+        tax: order.calculations?.totalTax || 0,
+      },
+    };
+
+    const responseData = {
+      message: "Order details retrieved successfully",
+      order: orderDetails,
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Get confirmed order detail error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};

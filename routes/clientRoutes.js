@@ -19,6 +19,7 @@ const {
   getProjectsByStatus,
   cancelProject,
   completeProject,
+  getConfirmedOrderDetail,
 } = require("../controllers/clientController");
 
 // Import new order controllers
@@ -70,6 +71,7 @@ const {
   validateGetOrderDetails,
   validateRequestReturn,
   validateCancelOrder,
+  validateGetConfirmedOrderDetail,
   validate: validateOrder,
 } = require("../utils/clientOrderValidation");
 
@@ -274,6 +276,14 @@ router.post(
   validateCompleteProject,
   validateProject,
   completeProject
+);
+
+router.post(
+  "/get_confrim_order_detail",
+  decryptRequest,
+  validateGetConfirmedOrderDetail,
+  validateOrder,
+  getConfirmedOrderDetail
 );
 
 module.exports = router;

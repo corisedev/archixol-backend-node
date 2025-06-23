@@ -84,6 +84,10 @@ const ServiceSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
+  location: {
+    type: String,
+    default: "N/A",
+  },
   createdAt: {
     type: Date,
     default: Date.now,
