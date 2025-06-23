@@ -1,9 +1,97 @@
-// utils/siteBuilderValidation.js - UPDATED FOR NEW FORMDATA STRUCTURE
+// utils/siteBuilderValidation.js - FIXED VERSION
 const { body, validationResult } = require("express-validator");
 
-// Validate site builder update request - UPDATED
+// Custom validation to handle FormData structure - FIXED
+exports.validateFormDataStructure = (req, res, next) => {
+  try {
+    console.log("=== VALIDATING FORMDATA STRUCTURE ===");
+    console.log("Body keys:", Object.keys(req.body));
+    console.log("Files count:", req.files?.length || 0);
+
+    // Check if we have any valid data to work with
+    const hasAboutUs = req.body.about_us !== undefined;
+    const hasSections = Object.keys(req.body).some((key) =>
+      key.startsWith("sections[")
+    );
+    const hasHeroBanners = Object.keys(req.body).some((key) =>
+      key.startsWith("hero_banners[")
+    );
+    const hasHotProducts = req.body.hot_products !== undefined;
+    const hasFiles = req.files && req.files.length > 0;
+    const hasTheme = req.body.theme !== undefined;
+    const hasSeo = req.body.seo !== undefined;
+    const hasSocialLinks = req.body.social_links !== undefined;
+    const hasPublishStatus = req.body.is_published !== undefined;
+
+    const hasValidData =
+      hasAboutUs ||
+      hasSections ||
+      hasHeroBanners ||
+      hasHotProducts ||
+      hasFiles ||
+      hasTheme ||
+      hasSeo ||
+      hasSocialLinks ||
+      hasPublishStatus;
+
+    if (!hasValidData) {
+      console.warn("No valid site builder data found");
+      return res.status(400).json({
+        error:
+          "No valid site builder data provided. Expected sections, hero_banners, hot_products, about_us, or files.",
+      });
+    }
+
+    // Validate file field names if files are present
+    if (hasFiles) {
+      const invalidFiles = req.files.filter((file) => {
+        const isValidHeroBanner = file.fieldname.match(/^hero_banners\[\d+\]$/);
+        const isValidSectionImage = file.fieldname.match(
+          /^sections\[\d+\]\[image\]$/
+        );
+        return !isValidHeroBanner && !isValidSectionImage;
+      });
+
+      if (invalidFiles.length > 0) {
+        console.warn(
+          "Invalid file field names found:",
+          invalidFiles.map((f) => f.fieldname)
+        );
+        return res.status(400).json({
+          error: `Invalid file field names: ${invalidFiles
+            .map((f) => f.fieldname)
+            .join(
+              ", "
+            )}. Expected hero_banners[index] or sections[index][image].`,
+        });
+      }
+    }
+
+    console.log("FormData structure validation passed");
+    console.log("Found data types:", {
+      hasAboutUs,
+      hasSections,
+      hasHeroBanners,
+      hasHotProducts,
+      hasFiles,
+      hasTheme,
+      hasSeo,
+      hasSocialLinks,
+      hasPublishStatus,
+    });
+
+    next();
+  } catch (error) {
+    console.error("FormData structure validation error:", error);
+    return res.status(400).json({
+      error: "Request validation failed: " + error.message,
+    });
+  }
+};
+
+// Validate site builder update request - SIMPLIFIED
 exports.validateSiteBuilderUpdate = [
-  // Validate sections array (now processed from FormData)
+  // Validate sections array if present
   body("sections")
     .optional()
     .isArray()
@@ -14,74 +102,43 @@ exports.validateSiteBuilderUpdate = [
     .isIn(["banner", "collection", "products", "text", "gallery"])
     .withMessage("Invalid section type"),
 
-  body("sections.*.imageUrl")
+  body("sections.*.collection_id")
     .optional()
-    .custom((value, { req }) => {
-      // Allow image URLs that are file paths
-      if (typeof value === "string" && value.length > 0) {
-        // Allow existing file paths or newly uploaded paths
-        if (value.startsWith("/uploads/") || value.startsWith("./")) {
-          return true;
-        }
-        throw new Error("Invalid image URL format");
+    .custom((value) => {
+      if (value && !value.match(/^[0-9a-fA-F]{24}$/)) {
+        throw new Error("Invalid collection ID format");
       }
       return true;
     }),
-
-  body("sections.*.collection_id")
-    .optional()
-    .isMongoId()
-    .withMessage("Invalid collection ID format"),
 
   body("sections.*.product_ids")
     .optional()
     .isArray()
     .withMessage("Product IDs must be an array"),
 
-  body("sections.*.product_ids.*")
-    .optional()
-    .isMongoId()
-    .withMessage("Invalid product ID format"),
-
   body("sections.*.title")
     .optional()
-    .trim()
     .isLength({ max: 200 })
     .withMessage("Section title cannot be more than 200 characters"),
 
   body("sections.*.content")
     .optional()
-    .trim()
     .isLength({ max: 5000 })
     .withMessage("Section content cannot be more than 5000 characters"),
 
-  // Validate hot products (JSON string from FormData)
+  // Validate hot products
   body("hot_products")
     .optional()
-    .custom((value) => {
-      if (typeof value === "string") {
-        try {
-          const parsed = JSON.parse(value);
-          if (!Array.isArray(parsed)) {
-            throw new Error("Hot products must be an array");
-          }
-        } catch (e) {
-          throw new Error("Hot products must be valid JSON array");
-        }
-      } else if (!Array.isArray(value)) {
-        throw new Error("Hot products must be an array");
-      }
-      return true;
-    }),
+    .isArray()
+    .withMessage("Hot products must be an array"),
 
-  // Validate about_us (direct field from FormData)
+  // Validate about_us
   body("about_us")
     .optional()
-    .trim()
     .isLength({ max: 10000 })
     .withMessage("About us content cannot be more than 10000 characters"),
 
-  // Validate hero banners array (now processed from FormData)
+  // Validate hero banners
   body("hero_banners")
     .optional()
     .isArray()
@@ -89,29 +146,25 @@ exports.validateSiteBuilderUpdate = [
 
   body("hero_banners.*.title")
     .optional()
-    .trim()
     .isLength({ max: 100 })
     .withMessage("Banner title cannot be more than 100 characters"),
 
   body("hero_banners.*.subtitle")
     .optional()
-    .trim()
     .isLength({ max: 200 })
     .withMessage("Banner subtitle cannot be more than 200 characters"),
 
   body("hero_banners.*.button_text")
     .optional()
-    .trim()
     .isLength({ max: 50 })
     .withMessage("Button text cannot be more than 50 characters"),
 
   body("hero_banners.*.button_link")
     .optional()
-    .trim()
     .isLength({ max: 500 })
     .withMessage("Button link cannot be more than 500 characters"),
 
-  // Validate theme (could be JSON string or object)
+  // Validate theme, seo, social_links (can be objects or JSON strings)
   body("theme")
     .optional()
     .custom((value) => {
@@ -125,7 +178,6 @@ exports.validateSiteBuilderUpdate = [
       return true;
     }),
 
-  // Validate SEO (could be JSON string or object)
   body("seo")
     .optional()
     .custom((value) => {
@@ -139,7 +191,6 @@ exports.validateSiteBuilderUpdate = [
       return true;
     }),
 
-  // Validate social links (could be JSON string or object)
   body("social_links")
     .optional()
     .custom((value) => {
@@ -153,7 +204,7 @@ exports.validateSiteBuilderUpdate = [
       return true;
     }),
 
-  // Validate is_published (string from FormData)
+  // Validate is_published
   body("is_published")
     .optional()
     .custom((value) => {
@@ -185,57 +236,15 @@ exports.validateTogglePublish = [
     }),
 ];
 
-// Custom validation to handle FormData structure
-exports.validateFormDataStructure = (req, res, next) => {
-  try {
-    console.log("=== VALIDATING FORMDATA STRUCTURE ===");
-
-    // Check if we have the expected FormData fields
-    const hasValidStructure =
-      req.body.about_us !== undefined ||
-      Object.keys(req.body).some((key) => key.startsWith("sections[")) ||
-      Object.keys(req.body).some((key) => key.startsWith("hero_banners[")) ||
-      req.body.hot_products !== undefined;
-
-    if (!hasValidStructure && (!req.files || req.files.length === 0)) {
-      return res.status(400).json({
-        error:
-          "Invalid request structure. Expected FormData with sections, hero_banners, or files.",
-      });
-    }
-
-    // Validate that files have proper field names if present
-    if (req.files && req.files.length > 0) {
-      const validFileFields = req.files.every(
-        (file) =>
-          file.fieldname.startsWith("hero_banners[") ||
-          file.fieldname.includes("[image]")
-      );
-
-      if (!validFileFields) {
-        return res.status(400).json({
-          error:
-            "Invalid file field names. Expected hero_banners[index] or sections[index][image].",
-        });
-      }
-    }
-
-    console.log("FormData structure validation passed");
-    next();
-  } catch (error) {
-    console.error("FormData structure validation error:", error);
-    return res.status(400).json({
-      error: "Request validation failed: " + error.message,
-    });
-  }
-};
-
-// Validation results check
+// Validation results check - SIMPLIFIED
 exports.validate = (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     console.log("Validation errors:", errors.array());
-    return res.status(400).json({ error: errors.array()[0].msg });
+    return res.status(400).json({
+      error: errors.array()[0].msg,
+      details: errors.array(),
+    });
   }
   next();
 };
