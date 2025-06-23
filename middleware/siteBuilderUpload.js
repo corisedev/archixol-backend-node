@@ -1,8 +1,7 @@
-// middleware/siteBuilderUpload.js
+// middleware/siteBuilderUpload.js - UPDATED FOR NEW FORMDATA STRUCTURE
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
-const CryptoJS = require("crypto-js");
 
 // Create storage directory if it doesn't exist
 const createStorageDir = (dir) => {
@@ -21,7 +20,7 @@ const storage = multer.diskStorage({
   filename: function (req, file, cb) {
     const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
     const ext = path.extname(file.originalname);
-    const prefix = file.fieldname || "site-builder";
+    const prefix = file.fieldname.replace(/\[|\]/g, "") || "site-builder"; // Clean field name
     cb(null, `${prefix}-${req.user.id}-${uniqueSuffix}${ext}`);
   },
 });
@@ -46,16 +45,10 @@ exports.uploadSiteBuilderImages = multer({
   storage: storage,
   limits: {
     fileSize: 10 * 1024 * 1024, // 10MB max file size
-    files: 30, // maximum 30 files at once
+    files: 50, // Handle many files
   },
   fileFilter: fileFilter,
-}).fields([
-  { name: "banner_images", maxCount: 10 },
-  { name: "hero_banners", maxCount: 10 },
-  { name: "gallery_images", maxCount: 15 },
-  { name: "section_images", maxCount: 15 },
-  { name: "imageUrl", maxCount: 10 }, // Handle imageUrl as file uploads
-]);
+}).any(); // Use .any() to handle dynamic field names
 
 // Handle upload errors
 exports.handleUploadErrors = (err, req, res, next) => {
@@ -67,7 +60,7 @@ exports.handleUploadErrors = (err, req, res, next) => {
     } else if (err.code === "LIMIT_FILE_COUNT") {
       return res
         .status(400)
-        .json({ error: "Too many files. Maximum is 30 files total." });
+        .json({ error: "Too many files. Maximum is 50 files total." });
     } else {
       return res.status(400).json({ error: err.message });
     }
@@ -79,144 +72,207 @@ exports.handleUploadErrors = (err, req, res, next) => {
   next();
 };
 
-// Process site builder data with uploaded files
+// Process site builder data with uploaded files - UPDATED FOR NEW STRUCTURE
 exports.processSiteBuilderData = (req, res, next) => {
   try {
-    console.log("Processing site builder data...");
-    console.log("Files received:", req.files);
-    console.log("Body received:", req.body);
+    console.log("=== PROCESSING SITE BUILDER DATA (NEW STRUCTURE) ===");
+    console.log("Files received:", req.files?.length || 0);
+    console.log("Body received keys:", Object.keys(req.body));
 
-    // Store uploaded file paths
+    // Step 1: Organize uploaded files by type
     const uploadedFiles = {
-      banner_images: [],
-      hero_banners: [],
-      gallery_images: [],
-      section_images: [],
-      imageUrl: [], // Handle imageUrl file uploads
+      hero_banners: {},
+      section_images: {},
     };
 
-    // Process uploaded files and create file paths
-    if (req.files) {
-      Object.keys(req.files).forEach((fieldName) => {
-        if (uploadedFiles[fieldName] !== undefined) {
-          uploadedFiles[fieldName] = req.files[fieldName].map((file) => ({
-            path: `/uploads/site-builder/${file.filename}`,
-            originalName: file.originalname,
-            size: file.size,
-            mimetype: file.mimetype,
-          }));
+    if (req.files && req.files.length > 0) {
+      req.files.forEach((file) => {
+        console.log(`Processing file: ${file.fieldname} -> ${file.filename}`);
+
+        // Hero banner files: hero_banners[0], hero_banners[1], etc.
+        if (file.fieldname.startsWith("hero_banners[")) {
+          const index = file.fieldname.match(/\[(\d+)\]/)?.[1];
+          if (index !== undefined) {
+            uploadedFiles.hero_banners[
+              index
+            ] = `/uploads/site-builder/${file.filename}`;
+            console.log(`Mapped hero banner ${index}: ${file.filename}`);
+          }
+        }
+
+        // Section images: sections[0][image], sections[1][image], etc.
+        else if (file.fieldname.includes("[image]")) {
+          const index = file.fieldname.match(/sections\[(\d+)\]/)?.[1];
+          if (index !== undefined) {
+            uploadedFiles.section_images[
+              index
+            ] = `/uploads/site-builder/${file.filename}`;
+            console.log(`Mapped section ${index} image: ${file.filename}`);
+          }
         }
       });
     }
 
-    // Handle encrypted data if present
-    if (req.body && req.body.data) {
+    // Step 2: Parse form data into structured objects
+    const parsedData = {
+      sections: [],
+      hero_banners: [],
+      hot_products: [],
+      about_us: req.body.about_us || "",
+    };
+
+    // Step 3: Process sections from form data
+    const sectionIndices = new Set();
+
+    // Find all section indices
+    Object.keys(req.body).forEach((key) => {
+      const match = key.match(/^sections\[(\d+)\]/);
+      if (match) {
+        sectionIndices.add(parseInt(match[1]));
+      }
+    });
+
+    // Build sections array
+    Array.from(sectionIndices)
+      .sort()
+      .forEach((index) => {
+        const section = {
+          type: req.body[`sections[${index}][type]`] || "",
+        };
+
+        // Add type-specific fields
+        if (section.type === "banner") {
+          // Check if there's an uploaded image for this section
+          if (uploadedFiles.section_images[index]) {
+            section.imageUrl = uploadedFiles.section_images[index];
+            console.log(
+              `Added imageUrl to section ${index}: ${section.imageUrl}`
+            );
+          }
+        } else if (section.type === "collection") {
+          section.collection_id =
+            req.body[`sections[${index}][collection_id]`] || "";
+        } else if (section.type === "text") {
+          section.title = req.body[`sections[${index}][title]`] || "";
+          section.content = req.body[`sections[${index}][content]`] || "";
+        }
+
+        parsedData.sections.push(section);
+      });
+
+    // Step 4: Process hero banners
+    // Find hero banner indices from uploaded files and form data
+    const heroBannerIndices = new Set();
+
+    // Add indices from uploaded files
+    Object.keys(uploadedFiles.hero_banners).forEach((index) => {
+      heroBannerIndices.add(parseInt(index));
+    });
+
+    // Add indices from form data (in case there are hero banners without files)
+    Object.keys(req.body).forEach((key) => {
+      const match = key.match(/^hero_banners\[(\d+)\]/);
+      if (match) {
+        heroBannerIndices.add(parseInt(match[1]));
+      }
+    });
+
+    // Build hero banners array
+    Array.from(heroBannerIndices)
+      .sort()
+      .forEach((index) => {
+        const banner = {
+          title: req.body[`hero_banners[${index}][title]`] || "",
+          subtitle: req.body[`hero_banners[${index}][subtitle]`] || "",
+          button_text: req.body[`hero_banners[${index}][button_text]`] || "",
+          button_link: req.body[`hero_banners[${index}][button_link]`] || "",
+        };
+
+        // Add uploaded image path if available
+        if (uploadedFiles.hero_banners[index]) {
+          banner.image_path = uploadedFiles.hero_banners[index];
+          banner.path = uploadedFiles.hero_banners[index];
+          console.log(
+            `Added image_path to hero banner ${index}: ${banner.image_path}`
+          );
+        }
+
+        parsedData.hero_banners.push(banner);
+      });
+
+    // Step 5: Process hot products (JSON string)
+    if (req.body.hot_products) {
       try {
-        // Decrypt the data field
-        const bytes = CryptoJS.AES.decrypt(
-          req.body.data,
-          process.env.AES_SECRET_KEY
-        );
-        const decryptedData = bytes.toString(CryptoJS.enc.Utf8);
-
-        console.log("Decrypted data:", decryptedData);
-
-        // Parse the decrypted data
-        const parsedData = JSON.parse(decryptedData);
-
-        // Replace req.body with the parsed data
-        req.body = parsedData;
-      } catch (decryptError) {
-        console.error("Decryption error:", decryptError);
-        // If decryption fails, continue with original body data (no encryption)
+        parsedData.hot_products = JSON.parse(req.body.hot_products);
+      } catch (parseError) {
+        console.error("Error parsing hot_products JSON:", parseError);
+        parsedData.hot_products = [];
       }
     }
-    // If no encrypted data field, treat as unencrypted request
 
-    // Process sections and merge with uploaded images
-    if (req.body.sections && Array.isArray(req.body.sections)) {
-      req.body.sections = req.body.sections.map((section, index) => {
-        // Handle banner sections with uploaded imageUrl files
-        if (section.type === "banner") {
-          // First check for specific imageUrl uploads
-          if (uploadedFiles.imageUrl.length > index) {
-            const imageUrlFile = uploadedFiles.imageUrl[index];
-            if (imageUrlFile) {
-              section.imageUrl = imageUrlFile.path;
-            }
-          }
-          // Fallback to banner_images if no specific imageUrl file
-          else if (uploadedFiles.banner_images.length > 0) {
-            const bannerImage = uploadedFiles.banner_images[0];
-            if (bannerImage) {
-              section.imageUrl = bannerImage.path;
-            }
-          }
-          // Fallback to section_images
-          else if (uploadedFiles.section_images.length > index) {
-            const sectionImage = uploadedFiles.section_images[index];
-            if (sectionImage) {
-              section.imageUrl = sectionImage.path;
-            }
-          }
-        }
-
-        // Handle gallery sections with uploaded images
-        if (
-          section.type === "gallery" &&
-          uploadedFiles.gallery_images.length > 0
-        ) {
-          section.images = uploadedFiles.gallery_images.map((img) => img.path);
-        }
-
-        return section;
-      });
+    // Step 6: Add other fields if present
+    if (req.body.theme) {
+      try {
+        parsedData.theme = JSON.parse(req.body.theme);
+      } catch (parseError) {
+        console.log("Theme parsing failed, keeping as string");
+        parsedData.theme = req.body.theme;
+      }
     }
 
-    // Process hero banners with uploaded images
-    if (req.body.hero_banners && Array.isArray(req.body.hero_banners)) {
-      req.body.hero_banners = req.body.hero_banners.map((banner, index) => {
-        // Check if there's an uploaded hero banner image for this index
-        if (uploadedFiles.hero_banners.length > index) {
-          const heroBannerImage = uploadedFiles.hero_banners[index];
-          if (heroBannerImage) {
-            banner.path = heroBannerImage.path;
-            banner.relativePath = heroBannerImage.path;
-            banner.image_path = heroBannerImage.path;
-          }
-        }
-
-        // Clean up path format if it exists
-        if (banner.path && !banner.path.startsWith("/uploads/")) {
-          // Handle relative paths like "./filename.jpg"
-          const cleanPath = banner.path.replace("./", "");
-          banner.path = `/uploads/site-builder/${cleanPath}`;
-        }
-
-        return banner;
-      });
+    if (req.body.seo) {
+      try {
+        parsedData.seo = JSON.parse(req.body.seo);
+      } catch (parseError) {
+        parsedData.seo = req.body.seo;
+      }
     }
 
-    // Add uploaded files info to request for reference
+    if (req.body.social_links) {
+      try {
+        parsedData.social_links = JSON.parse(req.body.social_links);
+      } catch (parseError) {
+        parsedData.social_links = req.body.social_links;
+      }
+    }
+
+    if (req.body.is_published !== undefined) {
+      parsedData.is_published = req.body.is_published === "true";
+    }
+
+    // Step 7: Set the processed data
+    req.body = parsedData;
+
+    // Step 8: Add uploaded files info to request for reference
     req.uploadedFiles = uploadedFiles;
 
-    console.log("Final processed body:", JSON.stringify(req.body, null, 2));
-    console.log("Uploaded files summary:", uploadedFiles);
+    console.log("=== PROCESSING COMPLETE ===");
+    console.log("Final hero_banners count:", parsedData.hero_banners.length);
+    console.log("Final sections count:", parsedData.sections.length);
+    console.log(
+      "Hero banners with images:",
+      parsedData.hero_banners.filter((b) => b.image_path).length
+    );
+    console.log(
+      "Sections with images:",
+      parsedData.sections.filter((s) => s.imageUrl).length
+    );
+    console.log("Hot products count:", parsedData.hot_products.length);
 
     next();
   } catch (error) {
-    console.error("Processing error:", error);
+    console.error("=== PROCESSING ERROR ===");
+    console.error("Error details:", error);
 
     // Delete uploaded files if there was an error
-    if (req.files) {
-      Object.keys(req.files).forEach((fieldName) => {
-        req.files[fieldName].forEach((file) => {
-          try {
-            fs.unlinkSync(file.path);
-          } catch (unlinkErr) {
-            console.error("Error deleting file:", unlinkErr);
-          }
-        });
+    if (req.files && req.files.length > 0) {
+      req.files.forEach((file) => {
+        try {
+          fs.unlinkSync(file.path);
+          console.log("Deleted file due to error:", file.path);
+        } catch (unlinkErr) {
+          console.error("Error deleting file:", unlinkErr);
+        }
       });
     }
 

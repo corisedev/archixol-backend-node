@@ -56,6 +56,7 @@ const {
 const {
   validateSiteBuilderUpdate,
   validateTogglePublish,
+  validateFormDataStructure,
   validate: validateSiteBuilder,
 } = require("../utils/siteBuilderValidation");
 
@@ -174,12 +175,13 @@ const processStoreDetailsData = (req, res, next) => {
 // @access  Private (Supplier Only)
 router.post(
   "/site_builder",
-  uploadSiteBuilderImages,
-  handleSiteBuilderUploadErrors,
-  processSiteBuilderData,
-  validateSiteBuilderUpdate,
-  validateSiteBuilder,
-  updateSiteBuilder
+  uploadSiteBuilderImages, // Handle file uploads (using .any() now)
+  handleSiteBuilderUploadErrors, // Handle upload errors
+  validateFormDataStructure, // NEW: Validate FormData structure
+  processSiteBuilderData, // Process FormData into structured objects
+  validateSiteBuilderUpdate, // Validate the processed data
+  validateSiteBuilder, // Check validation results
+  updateSiteBuilder // Controller
 );
 
 // @desc    Get site builder configuration
@@ -192,6 +194,7 @@ router.get("/site_builder", getSiteBuilder);
 // @access  Private (Supplier Only)
 router.post(
   "/site_builder/publish",
+  decryptRequest, // For publish toggle, still using encrypted data
   validateTogglePublish,
   validateSiteBuilder,
   toggleStorePublish

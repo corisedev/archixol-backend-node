@@ -1,4 +1,4 @@
-// controllers/siteBuilderController.js
+// controllers/siteBuilderController.js - UPDATED VERSION
 const SupplierSiteBuilder = require("../models/SupplierSiteBuilder");
 const Product = require("../models/Product");
 const Collection = require("../models/Collection");
@@ -21,8 +21,10 @@ exports.updateSiteBuilder = async (req, res) => {
       is_published,
     } = req.body;
 
-    console.log("Site builder update request from user:", userId);
-    console.log("Request data:", JSON.stringify(req.body, null, 2));
+    console.log("=== SITE BUILDER UPDATE CONTROLLER ===");
+    console.log("User ID:", userId);
+    console.log("Request data keys:", Object.keys(req.body));
+    console.log("Uploaded files info:", req.uploadedFiles);
 
     // Find or create site builder configuration
     let siteBuilder = await SupplierSiteBuilder.findOne({
@@ -45,12 +47,17 @@ exports.updateSiteBuilder = async (req, res) => {
         switch (section.type) {
           case "banner":
             if (section.imageUrl) {
-              // Handle image path processing
+              // Ensure proper path format
               processedSection.imageUrl = section.imageUrl.startsWith(
                 "/uploads/"
               )
                 ? section.imageUrl
-                : `/uploads/site-builder/${section.imageUrl}`;
+                : `/uploads/site-builder/${section.imageUrl.replace("./", "")}`;
+
+              console.log(
+                `Banner section ${index} imageUrl:`,
+                processedSection.imageUrl
+              );
             }
             break;
 
@@ -76,7 +83,7 @@ exports.updateSiteBuilder = async (req, res) => {
               processedSection.images = section.images.map((img) =>
                 img.startsWith("/uploads/")
                   ? img
-                  : `/uploads/site-builder/${img}`
+                  : `/uploads/site-builder/${img.replace("./", "")}`
               );
             }
             break;
@@ -91,6 +98,7 @@ exports.updateSiteBuilder = async (req, res) => {
       });
 
       siteBuilder.sections = processedSections;
+      console.log("Processed sections:", processedSections.length);
     }
 
     // Process hot products
@@ -131,18 +139,29 @@ exports.updateSiteBuilder = async (req, res) => {
       }
 
       siteBuilder.hot_products = processedHotProducts;
+      console.log("Processed hot products:", processedHotProducts.length);
     }
 
-    // Process hero banners
+    // Process hero banners - FIXED VERSION
     if (hero_banners && Array.isArray(hero_banners)) {
       const processedHeroBanners = hero_banners.map((banner, index) => {
-        let imagePath =
-          banner.path || banner.relativePath || banner.image_path || "";
+        let imagePath = "";
 
-        // Process image path
+        // Priority order for image path
+        if (banner.image_path) {
+          imagePath = banner.image_path;
+        } else if (banner.path) {
+          imagePath = banner.path;
+        } else if (banner.relativePath) {
+          imagePath = banner.relativePath;
+        }
+
+        // Ensure proper path format
         if (imagePath && !imagePath.startsWith("/uploads/")) {
           imagePath = `/uploads/site-builder/${imagePath.replace("./", "")}`;
         }
+
+        console.log(`Hero banner ${index} final path:`, imagePath);
 
         return {
           image_path: imagePath,
@@ -155,6 +174,11 @@ exports.updateSiteBuilder = async (req, res) => {
       });
 
       siteBuilder.hero_banners = processedHeroBanners;
+      console.log("Processed hero banners:", processedHeroBanners.length);
+      console.log(
+        "Hero banners with images:",
+        processedHeroBanners.filter((b) => b.image_path).length
+      );
     }
 
     // Update other fields
@@ -187,22 +211,31 @@ exports.updateSiteBuilder = async (req, res) => {
       siteBuilder.is_published = is_published;
     }
 
+    // Save the site builder configuration
     await siteBuilder.save();
 
-    console.log("Site builder configuration updated successfully");
+    console.log("=== SITE BUILDER SAVED SUCCESSFULLY ===");
+    console.log("Final hero banners count:", siteBuilder.hero_banners.length);
+    console.log("Final sections count:", siteBuilder.sections.length);
 
     const responseData = {
       message: "Site builder configuration updated successfully",
       site_builder_id: siteBuilder._id,
       is_published: siteBuilder.is_published,
+      hero_banners_count: siteBuilder.hero_banners.length,
+      sections_count: siteBuilder.sections.length,
     };
 
     res.status(200).json(responseData);
   } catch (err) {
-    console.error("Site builder update error:", err);
-    res.status(500).json({ error: "Server error" });
+    console.error("=== SITE BUILDER UPDATE ERROR ===");
+    console.error("Error details:", err);
+    res.status(500).json({ error: "Server error: " + err.message });
   }
 };
+
+// Rest of the controller methods remain the same...
+// (getSiteBuilder, getPublicStore, toggleStorePublish)
 
 // @desc    Get supplier site builder configuration
 // @route   GET /supplier/site_builder
