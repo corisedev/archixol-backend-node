@@ -4092,3 +4092,566 @@ const calculateProfileCompleteness = (company, userProfile) => {
 
   return Math.round((completeness / totalFields) * 100);
 };
+
+// Add these functions to controllers/adminController.js
+
+// @desc    Delete a user (soft delete by deactivating)
+// @route   POST /admin/delete_user
+// @access  Private (Admin Only)
+exports.deleteUser = async (req, res) => {
+  try {
+    const { user_id, permanent_delete = false } = req.body;
+
+    // Find the user
+    const user = await User.findById(user_id);
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Prevent admin from deleting themselves
+    if (user_id === req.user.id.toString()) {
+      return res
+        .status(400)
+        .json({ error: "You cannot delete your own account" });
+    }
+
+    // Prevent deleting other admins (optional security measure)
+    if (user.isAdmin && !req.user.isSuperAdmin) {
+      return res.status(400).json({ error: "Cannot delete admin accounts" });
+    }
+
+    if (permanent_delete) {
+      // Permanent deletion - remove all associated data
+      await Promise.all([
+        UserProfile.deleteOne({ user_id }),
+        Service.deleteMany({ user: user_id }),
+        Project.deleteMany({ user_id }),
+        Certificate.deleteMany({ user_id }),
+        Job.deleteMany({
+          $or: [{ service_provider: user_id }, { client: user_id }],
+        }),
+        ProjectJob.deleteMany({
+          $or: [{ client_id: user_id }, { selected_provider: user_id }],
+        }),
+        Order.deleteMany({ $or: [{ supplier_id: user_id }] }),
+        ClientOrder.deleteMany({
+          $or: [{ client_id: user_id }, { supplier_id: user_id }],
+        }),
+        Product.deleteMany({ supplier_id: user_id }),
+        Collection.deleteMany({ supplier_id: user_id }),
+        Customer.deleteMany({ supplier_id: user_id }),
+        Vendor.deleteMany({ supplier_id: user_id }),
+        Company.deleteOne({ user_id }),
+        CompanyDocument.deleteMany({ user_id }),
+        User.findByIdAndDelete(user_id),
+      ]);
+    } else {
+      // Soft delete - deactivate account
+      user.isEmailVerified = false;
+      await user.save();
+    }
+
+    const responseData = {
+      message: permanent_delete
+        ? "User permanently deleted successfully"
+        : "User deactivated successfully",
+      user_id,
+      username: user.username,
+      deletion_type: permanent_delete ? "permanent" : "soft",
+      deleted_at: new Date().toISOString(),
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error deleting user:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Delete a project
+// @route   POST /admin/delete_project
+// @access  Private (Admin Only)
+exports.deleteProject = async (req, res) => {
+  try {
+    const { project_id } = req.body;
+
+    const project = await ProjectJob.findById(project_id);
+
+    if (!project) {
+      return res.status(404).json({ error: "Project not found" });
+    }
+
+    // Delete related jobs and saved jobs
+    await Promise.all([
+      Job.deleteMany({ project_job: project_id }),
+      SavedJob.deleteMany({ project_job: project_id }),
+      ProjectJob.findByIdAndDelete(project_id),
+    ]);
+
+    const responseData = {
+      message: "Project deleted successfully",
+      project_id,
+      project_title: project.title,
+      deleted_at: new Date().toISOString(),
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error deleting project:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Delete a service
+// @route   POST /admin/delete_service
+// @access  Private (Admin Only)
+exports.deleteService = async (req, res) => {
+  try {
+    const { service_id } = req.body;
+
+    const service = await Service.findById(service_id).populate(
+      "user",
+      "username"
+    );
+
+    if (!service) {
+      return res.status(404).json({ error: "Service not found" });
+    }
+
+    // Delete related jobs
+    await Promise.all([
+      Job.deleteMany({ service: service_id }),
+      Service.findByIdAndDelete(service_id),
+    ]);
+
+    const responseData = {
+      message: "Service deleted successfully",
+      service_id,
+      service_title: service.service_title,
+      service_provider: service.user?.username || "Unknown",
+      deleted_at: new Date().toISOString(),
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error deleting service:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Delete a product
+// @route   POST /admin/delete_product
+// @access  Private (Admin Only)
+exports.deleteProduct = async (req, res) => {
+  try {
+    const { product_id } = req.body;
+
+    const product = await Product.findById(product_id).populate(
+      "supplier_id",
+      "username"
+    );
+
+    if (!product) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    // Remove product from collections and orders
+    await Promise.all([
+      Collection.updateMany(
+        { product_list: product_id },
+        { $pull: { product_list: product_id } }
+      ),
+      Product.findByIdAndDelete(product_id),
+    ]);
+
+    const responseData = {
+      message: "Product deleted successfully",
+      product_id,
+      product_title: product.title,
+      supplier: product.supplier_id?.username || "Unknown",
+      deleted_at: new Date().toISOString(),
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error deleting product:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Delete an order
+// @route   POST /admin/delete_order
+// @access  Private (Admin Only)
+exports.deleteOrder = async (req, res) => {
+  try {
+    const { order_id, order_type = "supplier" } = req.body;
+
+    let order;
+    if (order_type === "client") {
+      order = await ClientOrder.findById(order_id);
+      if (order) {
+        await ClientOrder.findByIdAndDelete(order_id);
+      }
+    } else {
+      order = await Order.findById(order_id);
+      if (order) {
+        await Order.findByIdAndDelete(order_id);
+      }
+    }
+
+    if (!order) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+
+    const responseData = {
+      message: "Order deleted successfully",
+      order_id,
+      order_no: order.order_no,
+      order_type,
+      deleted_at: new Date().toISOString(),
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error deleting order:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Delete a customer
+// @route   POST /admin/delete_customer
+// @access  Private (Admin Only)
+exports.deleteCustomer = async (req, res) => {
+  try {
+    const { customer_id } = req.body;
+
+    const customer = await Customer.findById(customer_id);
+
+    if (!customer) {
+      return res.status(404).json({ error: "Customer not found" });
+    }
+
+    // Update orders to remove customer reference
+    await Promise.all([
+      Order.updateMany({ customer_id: customer_id }, { customer_id: null }),
+      Customer.findByIdAndDelete(customer_id),
+    ]);
+
+    const responseData = {
+      message: "Customer deleted successfully",
+      customer_id,
+      customer_name: `${customer.first_name} ${customer.last_name}`,
+      deleted_at: new Date().toISOString(),
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error deleting customer:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Delete a collection
+// @route   POST /admin/delete_collection
+// @access  Private (Admin Only)
+exports.deleteCollection = async (req, res) => {
+  try {
+    const { collection_id } = req.body;
+
+    const collection = await Collection.findById(collection_id).populate(
+      "supplier_id",
+      "username"
+    );
+
+    if (!collection) {
+      return res.status(404).json({ error: "Collection not found" });
+    }
+
+    await Collection.findByIdAndDelete(collection_id);
+
+    const responseData = {
+      message: "Collection deleted successfully",
+      collection_id,
+      collection_title: collection.title,
+      supplier: collection.supplier_id?.username || "Unknown",
+      deleted_at: new Date().toISOString(),
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error deleting collection:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Delete a company
+// @route   POST /admin/delete_company
+// @access  Private (Admin Only)
+exports.deleteCompany = async (req, res) => {
+  try {
+    const { company_id } = req.body;
+
+    const company = await Company.findById(company_id).populate(
+      "user_id",
+      "username"
+    );
+
+    if (!company) {
+      return res.status(404).json({ error: "Company not found" });
+    }
+
+    // Delete related company documents
+    await Promise.all([
+      CompanyDocument.deleteMany({ user_id: company.user_id }),
+      Company.findByIdAndDelete(company_id),
+    ]);
+
+    const responseData = {
+      message: "Company deleted successfully",
+      company_id,
+      company_name: company.name,
+      owner: company.user_id?.username || "Unknown",
+      deleted_at: new Date().toISOString(),
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error deleting company:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Delete a vendor
+// @route   POST /admin/delete_vendor
+// @access  Private (Admin Only)
+exports.deleteVendor = async (req, res) => {
+  try {
+    const { vendor_id } = req.body;
+
+    const vendor = await Vendor.findById(vendor_id);
+
+    if (!vendor) {
+      return res.status(404).json({ error: "Vendor not found" });
+    }
+
+    // Update purchase orders to remove vendor reference
+    await Promise.all([
+      PurchaseOrder.updateMany({ vendor_id: vendor_id }, { vendor_id: null }),
+      Vendor.findByIdAndDelete(vendor_id),
+    ]);
+
+    const responseData = {
+      message: "Vendor deleted successfully",
+      vendor_id,
+      vendor_name: `${vendor.first_name} ${vendor.last_name}`,
+      deleted_at: new Date().toISOString(),
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error deleting vendor:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Delete a purchase order
+// @route   POST /admin/delete_purchase_order
+// @access  Private (Admin Only)
+exports.deletePurchaseOrder = async (req, res) => {
+  try {
+    const { purchase_order_id } = req.body;
+
+    const purchaseOrder = await PurchaseOrder.findById(purchase_order_id);
+
+    if (!purchaseOrder) {
+      return res.status(404).json({ error: "Purchase order not found" });
+    }
+
+    await PurchaseOrder.findByIdAndDelete(purchase_order_id);
+
+    const responseData = {
+      message: "Purchase order deleted successfully",
+      purchase_order_id,
+      po_no: purchaseOrder.po_no,
+      deleted_at: new Date().toISOString(),
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error deleting purchase order:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Delete a discount
+// @route   POST /admin/delete_discount
+// @access  Private (Admin Only)
+exports.deleteDiscount = async (req, res) => {
+  try {
+    const { discount_id } = req.body;
+
+    const discount = await Discount.findById(discount_id);
+
+    if (!discount) {
+      return res.status(404).json({ error: "Discount not found" });
+    }
+
+    await Discount.findByIdAndDelete(discount_id);
+
+    const responseData = {
+      message: "Discount deleted successfully",
+      discount_id,
+      discount_title: discount.title,
+      discount_code: discount.code,
+      deleted_at: new Date().toISOString(),
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error deleting discount:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Delete a notification
+// @route   POST /admin/delete_notification
+// @access  Private (Admin Only)
+exports.deleteNotification = async (req, res) => {
+  try {
+    const { notification_id } = req.body;
+
+    const notification = await Notification.findById(notification_id);
+
+    if (!notification) {
+      return res.status(404).json({ error: "Notification not found" });
+    }
+
+    await Notification.findByIdAndDelete(notification_id);
+
+    const responseData = {
+      message: "Notification deleted successfully",
+      notification_id,
+      deleted_at: new Date().toISOString(),
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error deleting notification:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Delete site builder data
+// @route   POST /admin/delete_site_builder
+// @access  Private (Admin Only)
+exports.deleteSiteBuilder = async (req, res) => {
+  try {
+    const { supplier_id } = req.body;
+
+    const siteBuilder = await SupplierSiteBuilder.findOne({ supplier_id });
+
+    if (!siteBuilder) {
+      return res.status(404).json({ error: "Site builder data not found" });
+    }
+
+    await SupplierSiteBuilder.findByIdAndDelete(siteBuilder._id);
+
+    const responseData = {
+      message: "Site builder data deleted successfully",
+      supplier_id,
+      deleted_at: new Date().toISOString(),
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error deleting site builder data:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Bulk delete users
+// @route   POST /admin/bulk_delete_users
+// @access  Private (Admin Only)
+exports.bulkDeleteUsers = async (req, res) => {
+  try {
+    const { user_ids, permanent_delete = false } = req.body;
+
+    if (!Array.isArray(user_ids) || user_ids.length === 0) {
+      return res.status(400).json({ error: "User IDs array is required" });
+    }
+
+    // Prevent admin from deleting themselves
+    if (user_ids.includes(req.user.id.toString())) {
+      return res
+        .status(400)
+        .json({ error: "You cannot delete your own account" });
+    }
+
+    const users = await User.find({ _id: { $in: user_ids } });
+
+    if (users.length === 0) {
+      return res.status(404).json({ error: "No users found" });
+    }
+
+    let deletedCount = 0;
+    const deletedUsers = [];
+
+    for (const user of users) {
+      // Skip admin users if current user is not super admin
+      if (user.isAdmin && !req.user.isSuperAdmin) {
+        continue;
+      }
+
+      if (permanent_delete) {
+        // Permanent deletion
+        await Promise.all([
+          UserProfile.deleteOne({ user_id: user._id }),
+          Service.deleteMany({ user: user._id }),
+          Project.deleteMany({ user_id: user._id }),
+          User.findByIdAndDelete(user._id),
+        ]);
+      } else {
+        // Soft delete
+        user.isEmailVerified = false;
+        await user.save();
+      }
+
+      deletedCount++;
+      deletedUsers.push({
+        user_id: user._id.toString(),
+        username: user.username,
+        user_type: user.user_type,
+      });
+    }
+
+    const responseData = {
+      message: `${deletedCount} users ${
+        permanent_delete ? "permanently deleted" : "deactivated"
+      } successfully`,
+      deletion_type: permanent_delete ? "permanent" : "soft",
+      deleted_count: deletedCount,
+      deleted_users: deletedUsers,
+      deleted_at: new Date().toISOString(),
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error bulk deleting users:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};

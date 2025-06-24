@@ -24,6 +24,20 @@ const {
   getAdminServiceProvider,
   getAdminCompanies,
   getAdminCompany,
+  deleteUser,
+  deleteProject,
+  deleteService,
+  deleteProduct,
+  deleteOrder,
+  deleteCustomer,
+  deleteCollection,
+  deleteCompany,
+  deleteVendor,
+  deletePurchaseOrder,
+  deleteDiscount,
+  deleteNotification,
+  deleteSiteBuilder,
+  bulkDeleteUsers,
 } = require("../controllers/adminController");
 
 // Import middleware
@@ -40,6 +54,24 @@ const {
   validateGetProject,
   validate: validationGetProject,
 } = require("../utils/adminProjectValidation");
+
+const {
+  validateDeleteUser,
+  validateDeleteProject,
+  validateDeleteService,
+  validateDeleteProduct,
+  validateDeleteOrder,
+  validateDeleteCustomer,
+  validateDeleteCollection,
+  validateDeleteCompany,
+  validateDeleteVendor,
+  validateDeletePurchaseOrder,
+  validateDeleteDiscount,
+  validateDeleteNotification,
+  validateDeleteSiteBuilder,
+  validateBulkDeleteUsers,
+  validate: validateDelete,
+} = require("../utils/adminDeleteValidation");
 
 const {
   validateGetCustomer,
@@ -147,6 +179,182 @@ router.post(
   validateGetCompany,
   validateCustomer,
   getAdminCompany
+);
+
+// @desc    Delete a user
+// @route   POST /admin/delete_user
+// @access  Private (Admin Only)
+router.post(
+  "/delete_user",
+  decryptRequest,
+  validateDeleteUser,
+  validateDelete,
+  deleteUser
+);
+
+// @desc    Bulk delete users
+// @route   POST /admin/bulk_delete_users
+// @access  Private (Admin Only)
+router.post(
+  "/bulk_delete_users",
+  decryptRequest,
+  validateBulkDeleteUsers,
+  validateDelete,
+  bulkDeleteUsers
+);
+
+// ==================== PROJECT MANAGEMENT DELETE ROUTES ====================
+
+// @desc    Delete a project
+// @route   POST /admin/delete_project
+// @access  Private (Admin Only)
+router.post(
+  "/delete_project",
+  decryptRequest,
+  validateDeleteProject,
+  validateDelete,
+  deleteProject
+);
+
+// ==================== SERVICE MANAGEMENT DELETE ROUTES ====================
+
+// @desc    Delete a service
+// @route   POST /admin/delete_service
+// @access  Private (Admin Only)
+router.post(
+  "/delete_service",
+  decryptRequest,
+  validateDeleteService,
+  validateDelete,
+  deleteService
+);
+
+// ==================== PRODUCT MANAGEMENT DELETE ROUTES ====================
+
+// @desc    Delete a product
+// @route   POST /admin/delete_product
+// @access  Private (Admin Only)
+router.post(
+  "/delete_product",
+  decryptRequest,
+  validateDeleteProduct,
+  validateDelete,
+  deleteProduct
+);
+
+// @desc    Delete a collection
+// @route   POST /admin/delete_collection
+// @access  Private (Admin Only)
+router.post(
+  "/delete_collection",
+  decryptRequest,
+  validateDeleteCollection,
+  validateDelete,
+  deleteCollection
+);
+
+// ==================== ORDER MANAGEMENT DELETE ROUTES ====================
+
+// @desc    Delete an order
+// @route   POST /admin/delete_order
+// @access  Private (Admin Only)
+router.post(
+  "/delete_order",
+  decryptRequest,
+  validateDeleteOrder,
+  validateDelete,
+  deleteOrder
+);
+
+// ==================== CUSTOMER MANAGEMENT DELETE ROUTES ====================
+
+// @desc    Delete a customer
+// @route   POST /admin/delete_customer
+// @access  Private (Admin Only)
+router.post(
+  "/delete_customer",
+  decryptRequest,
+  validateDeleteCustomer,
+  validateDelete,
+  deleteCustomer
+);
+
+// ==================== VENDOR MANAGEMENT DELETE ROUTES ====================
+
+// @desc    Delete a vendor
+// @route   POST /admin/delete_vendor
+// @access  Private (Admin Only)
+router.post(
+  "/delete_vendor",
+  decryptRequest,
+  validateDeleteVendor,
+  validateDelete,
+  deleteVendor
+);
+
+// ==================== PURCHASE ORDER DELETE ROUTES ====================
+
+// @desc    Delete a purchase order
+// @route   POST /admin/delete_purchase_order
+// @access  Private (Admin Only)
+router.post(
+  "/delete_purchase_order",
+  decryptRequest,
+  validateDeletePurchaseOrder,
+  validateDelete,
+  deletePurchaseOrder
+);
+
+// ==================== COMPANY MANAGEMENT DELETE ROUTES ====================
+
+// @desc    Delete a company
+// @route   POST /admin/delete_company
+// @access  Private (Admin Only)
+router.post(
+  "/delete_company",
+  decryptRequest,
+  validateDeleteCompany,
+  validateDelete,
+  deleteCompany
+);
+
+// ==================== DISCOUNT MANAGEMENT DELETE ROUTES ====================
+
+// @desc    Delete a discount
+// @route   POST /admin/delete_discount
+// @access  Private (Admin Only)
+router.post(
+  "/delete_discount",
+  decryptRequest,
+  validateDeleteDiscount,
+  validateDelete,
+  deleteDiscount
+);
+
+// ==================== NOTIFICATION MANAGEMENT DELETE ROUTES ====================
+
+// @desc    Delete a notification
+// @route   POST /admin/delete_notification
+// @access  Private (Admin Only)
+router.post(
+  "/delete_notification",
+  decryptRequest,
+  validateDeleteNotification,
+  validateDelete,
+  deleteNotification
+);
+
+// ==================== SITE BUILDER DELETE ROUTES ====================
+
+// @desc    Delete site builder data
+// @route   POST /admin/delete_site_builder
+// @access  Private (Admin Only)
+router.post(
+  "/delete_site_builder",
+  decryptRequest,
+  validateDeleteSiteBuilder,
+  validateDelete,
+  deleteSiteBuilder
 );
 
 module.exports = router;
