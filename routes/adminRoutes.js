@@ -18,6 +18,8 @@ const {
   getAdminSuppliers,
   getAdminSupplier,
   toggleUserAccountStatus,
+  getAdminProjects,
+  getAdminProject,
 } = require("../controllers/adminController");
 
 // Import middleware
@@ -29,6 +31,11 @@ const {
   validateToggleServiceStatus,
   validate,
 } = require("../utils/adminServiceValidation");
+
+const {
+  validateGetProject,
+  validate: validationGetProject,
+} = require("../utils/adminProjectValidation");
 
 const {
   validateGetCustomer,
@@ -104,6 +111,16 @@ router.post(
   validateToggleUserAccountStatus,
   validateUser,
   toggleUserAccountStatus
+);
+
+router.get("/get_projects", getAdminProjects);
+
+router.post(
+  "/get_project",
+  decryptRequest,
+  validateGetProject,
+  validationGetProject,
+  getAdminProject
 );
 
 module.exports = router;

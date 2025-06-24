@@ -121,6 +121,7 @@ exports.getStoreNavFooter = async (req, res) => {
         policyContent.terms_of_services.trim() !== ""
       ),
       store_logo: storeDetailsData?.logo || null,
+      store_name: storeDetailsData?.store_name || supplier.username || "Store",
     };
 
     const responseData = {

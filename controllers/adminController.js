@@ -2721,3 +2721,252 @@ exports.toggleUserAccountStatus = async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 };
+
+// @desc    Get admin projects data
+// @route   GET /admin/get_projects
+// @access  Private (Admin Only)
+exports.getAdminProjects = async (req, res) => {
+  try {
+    const dateRanges = getDateRanges();
+    const {
+      currentMonthStart,
+      currentMonthEnd,
+      previousMonthStart,
+      previousMonthEnd,
+    } = dateRanges;
+
+    // 1. Total Projects
+    const totalProjectsCurrentMonth = await ProjectJob.countDocuments({
+      createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
+    });
+    const totalProjectsPreviousMonth = await ProjectJob.countDocuments({
+      createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
+    });
+    const totalProjectsOverall = await ProjectJob.countDocuments({});
+
+    // 2. Active Projects (open and in_progress)
+    const activeProjectsCurrentMonth = await ProjectJob.countDocuments({
+      status: { $in: ["open", "in_progress"] },
+      createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
+    });
+    const activeProjectsPreviousMonth = await ProjectJob.countDocuments({
+      status: { $in: ["open", "in_progress"] },
+      createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
+    });
+    const activeProjectsOverall = await ProjectJob.countDocuments({
+      status: { $in: ["open", "in_progress"] },
+    });
+
+    // 3. New This Month
+    const newThisMonthCount = totalProjectsCurrentMonth;
+    const newPreviousMonthCount = totalProjectsPreviousMonth;
+
+    // 4. Projects Growth (compared to previous period)
+    const projectsGrowthCurrentMonth = totalProjectsCurrentMonth;
+    const projectsGrowthPreviousMonth = totalProjectsPreviousMonth;
+
+    // Get all projects with client details for the projects list
+    const projects = await ProjectJob.find({})
+      .populate("client_id", "username email")
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .select("title category city budget createdAt status client_id");
+
+    // Format projects according to specification
+    const formattedProjects = projects.map((project) => ({
+      title: project.title || "Untitled Project",
+      category: project.category || "Uncategorized",
+      location: project.city || "Not specified",
+      amount: project.budget || 0,
+      date: project.createdAt.toISOString(),
+      status: project.status || "open",
+    }));
+
+    // Build stats object
+    const stats = {
+      total_projects: {
+        value: totalProjectsOverall,
+        trendingValue: calculateTrending(
+          totalProjectsCurrentMonth,
+          totalProjectsPreviousMonth
+        ),
+        isTrending: isTrendingPositive(
+          calculateTrending(
+            totalProjectsCurrentMonth,
+            totalProjectsPreviousMonth
+          )
+        ),
+      },
+      active_projects: {
+        value: activeProjectsOverall,
+        trendingValue: calculateTrending(
+          activeProjectsCurrentMonth,
+          activeProjectsPreviousMonth
+        ),
+        isTrending: isTrendingPositive(
+          calculateTrending(
+            activeProjectsCurrentMonth,
+            activeProjectsPreviousMonth
+          )
+        ),
+      },
+      new_this_month: {
+        value: newThisMonthCount,
+        trendingValue: calculateTrending(
+          newThisMonthCount,
+          newPreviousMonthCount
+        ),
+        isTrending: isTrendingPositive(
+          calculateTrending(newThisMonthCount, newPreviousMonthCount)
+        ),
+      },
+      projects_growth: {
+        value: totalProjectsOverall,
+        trendingValue: calculateTrending(
+          projectsGrowthCurrentMonth,
+          projectsGrowthPreviousMonth
+        ),
+        isTrending: isTrendingPositive(
+          calculateTrending(
+            projectsGrowthCurrentMonth,
+            projectsGrowthPreviousMonth
+          )
+        ),
+      },
+    };
+
+    const responseData = {
+      message: "Admin projects data retrieved successfully",
+      stats,
+      projects: formattedProjects,
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error getting admin projects data:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// @desc    Get project details for admin
+// @route   POST /admin/get_project
+// @access  Private (Admin Only)
+exports.getAdminProject = async (req, res) => {
+  try {
+    const { project_id } = req.body;
+
+    if (!project_id) {
+      return res.status(400).json({ error: "Project ID is required" });
+    }
+
+    // Find the project with populated client and selected provider details
+    const project = await ProjectJob.findById(project_id)
+      .populate("client_id", "username email user_type createdAt")
+      .populate("selected_provider", "username email user_type");
+
+    if (!project) {
+      return res.status(404).json({ error: "Project not found" });
+    }
+
+    // Get client profile for additional details
+    let clientProfile = null;
+    if (project.client_id) {
+      clientProfile = await ClientProfile.findOne({
+        user_id: project.client_id._id,
+      }).select("full_name phone_number company_name address city");
+    }
+
+    // Get service provider profile for additional details
+    let providerProfile = null;
+    if (project.selected_provider) {
+      providerProfile = await UserProfile.findOne({
+        user_id: project.selected_provider._id,
+      }).select("fullname phone_number address service_location");
+    }
+
+    // Format client information
+    const clientInfo = {
+      id: project.client_id?._id?.toString() || null,
+      username: project.client_id?.username || "Unknown Client",
+      email: project.client_id?.email || "N/A",
+      full_name:
+        clientProfile?.full_name || project.client_id?.username || "Unknown",
+      phone_number: clientProfile?.phone_number || "N/A",
+      company_name: clientProfile?.company_name || "N/A",
+      address: clientProfile?.address || "N/A",
+      city: clientProfile?.city || "N/A",
+      joined_date: project.client_id?.createdAt?.toISOString() || null,
+    };
+
+    // Format service provider information (if assigned)
+    const providerInfo = project.selected_provider
+      ? {
+          id: project.selected_provider._id.toString(),
+          username: project.selected_provider.username,
+          email: project.selected_provider.email,
+          full_name:
+            providerProfile?.fullname || project.selected_provider.username,
+          phone_number: providerProfile?.phone_number || "N/A",
+          address:
+            providerProfile?.address ||
+            providerProfile?.service_location ||
+            "N/A",
+        }
+      : null;
+
+    // Format proposals
+    const formattedProposals = project.proposals.map((proposal) => ({
+      id: proposal._id.toString(),
+      service_provider_id: proposal.service_provider_id.toString(),
+      proposal_text: proposal.proposal_text,
+      proposed_budget: proposal.proposed_budget,
+      proposed_timeline: proposal.proposed_timeline,
+      status: proposal.status,
+      submitted_at: proposal.submitted_at.toISOString(),
+    }));
+
+    // Format the complete project details
+    const formattedProject = {
+      id: project._id.toString(),
+      title: project.title || "Untitled Project",
+      type: project.type || "project",
+      category: project.category || "Uncategorized",
+      description: project.description || "No description available",
+      budget: project.budget || 0,
+      starting_date: project.starting_date?.toISOString() || null,
+      timeline: project.timeline || "Not specified",
+      city: project.city || "Not specified",
+      note: project.note || "",
+      address: project.address || "",
+      urgent: project.urgent || false,
+      docs: project.docs || [],
+      required_skills: project.required_skills || [],
+      tags: project.tags || [],
+      status: project.status || "open",
+      client: clientInfo,
+      selected_provider: providerInfo,
+      proposals: formattedProposals,
+      proposal_count: project.proposals?.length || 0,
+      started_at: project.started_at?.toISOString() || null,
+      completed_at: project.completed_at?.toISOString() || null,
+      payment_status: project.payment_status || "pending",
+      created_at: project.createdAt.toISOString(),
+      updated_at: project.updatedAt.toISOString(),
+    };
+
+    const responseData = {
+      message: "Project details retrieved successfully",
+      project: formattedProject,
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error getting project details:", err);
+    if (err.name === "CastError") {
+      return res.status(400).json({ error: "Invalid project ID format" });
+    }
+    res.status(500).json({ error: "Server error" });
+  }
+};
