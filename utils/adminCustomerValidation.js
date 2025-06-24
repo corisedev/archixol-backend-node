@@ -28,3 +28,19 @@ exports.validate = (req, res, next) => {
   }
   next();
 };
+
+exports.validateGetServiceProvider = [
+  body("service_provider_id")
+    .notEmpty()
+    .withMessage("Service provider ID is required")
+    .isMongoId()
+    .withMessage("Invalid service provider ID format"),
+];
+
+exports.validateGetCompany = [
+  body("company_id")
+    .notEmpty()
+    .withMessage("Company ID is required")
+    .isMongoId()
+    .withMessage("Invalid company ID format"),
+];

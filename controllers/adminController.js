@@ -2970,3 +2970,1125 @@ exports.getAdminProject = async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 };
+
+// @desc    Get admin service providers data
+// @route   GET /admin/get_service_providers
+// @access  Private (Admin Only)
+exports.getAdminServiceProviders = async (req, res) => {
+  try {
+    const dateRanges = getDateRanges();
+    const {
+      currentMonthStart,
+      currentMonthEnd,
+      previousMonthStart,
+      previousMonthEnd,
+    } = dateRanges;
+
+    // 1. Total Service Providers (users with user_type 'service_provider' or accessRoles containing 'service_provider')
+    const totalServiceProvidersCurrentMonth = await User.countDocuments({
+      $or: [
+        { user_type: "service_provider" },
+        { accessRoles: { $in: ["service_provider"] } },
+      ],
+      createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
+    });
+
+    const totalServiceProvidersPreviousMonth = await User.countDocuments({
+      $or: [
+        { user_type: "service_provider" },
+        { accessRoles: { $in: ["service_provider"] } },
+      ],
+      createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
+    });
+
+    const totalServiceProvidersOverall = await User.countDocuments({
+      $or: [
+        { user_type: "service_provider" },
+        { accessRoles: { $in: ["service_provider"] } },
+      ],
+    });
+
+    // 2. Active Service Providers (those who have active services or recent job activity)
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+
+    // Get active service providers from services and jobs
+    const [activeFromServices, activeFromJobs] = await Promise.all([
+      Service.distinct("user", {
+        service_status: true,
+        createdAt: { $gte: thirtyDaysAgo },
+      }),
+      Job.distinct("service_provider", {
+        createdAt: { $gte: thirtyDaysAgo },
+      }),
+    ]);
+
+    const [previousActiveFromServices, previousActiveFromJobs] =
+      await Promise.all([
+        Service.distinct("user", {
+          service_status: true,
+          createdAt: { $gte: sixtyDaysAgo, $lt: thirtyDaysAgo },
+        }),
+        Job.distinct("service_provider", {
+          createdAt: { $gte: sixtyDaysAgo, $lt: thirtyDaysAgo },
+        }),
+      ]);
+
+    // Combine and deduplicate active service providers
+    const activeServiceProvidersSet = new Set([
+      ...activeFromServices,
+      ...activeFromJobs,
+    ]);
+    const previousActiveServiceProvidersSet = new Set([
+      ...previousActiveFromServices,
+      ...previousActiveFromJobs,
+    ]);
+
+    const activeServiceProvidersCount = activeServiceProvidersSet.size;
+    const previousActiveServiceProvidersCount =
+      previousActiveServiceProvidersSet.size;
+
+    // 3. New This Month
+    const newThisMonthCount = totalServiceProvidersCurrentMonth;
+    const newPreviousMonthCount = totalServiceProvidersPreviousMonth;
+
+    // 4. Total Earnings (sum of all completed jobs for service providers)
+    const currentMonthEarnings = await Job.aggregate([
+      {
+        $match: {
+          status: "completed",
+          completed_date: { $gte: currentMonthStart, $lte: currentMonthEnd },
+        },
+      },
+      { $group: { _id: null, total: { $sum: "$price" } } },
+    ]);
+
+    const previousMonthEarnings = await Job.aggregate([
+      {
+        $match: {
+          status: "completed",
+          completed_date: { $gte: previousMonthStart, $lte: previousMonthEnd },
+        },
+      },
+      { $group: { _id: null, total: { $sum: "$price" } } },
+    ]);
+
+    const currentEarnings = currentMonthEarnings[0]?.total || 0;
+    const previousEarnings = previousMonthEarnings[0]?.total || 0;
+
+    // Get total earnings overall
+    const totalEarningsOverall = await Job.aggregate([
+      { $match: { status: "completed" } },
+      { $group: { _id: null, total: { $sum: "$price" } } },
+    ]);
+    const overallEarnings = totalEarningsOverall[0]?.total || 0;
+
+    // 5. Get all service providers with their details
+    const serviceProviders = await User.find({
+      $or: [
+        { user_type: "service_provider" },
+        { accessRoles: { $in: ["service_provider"] } },
+      ],
+    })
+      .select("_id username email createdAt isEmailVerified")
+      .sort({ createdAt: -1 })
+      .limit(100);
+
+    // Get detailed service provider data
+    const formattedServiceProviders = await Promise.all(
+      serviceProviders.map(async (serviceProvider) => {
+        // Get service provider profile information
+        const userProfile = await UserProfile.findOne({
+          user_id: serviceProvider._id,
+        });
+
+        // Check if they have a company profile
+        const hasCompany = await Company.exists({
+          user_id: serviceProvider._id,
+        });
+
+        // Get job statistics
+        const [jobCount, totalEarnings] = await Promise.all([
+          Job.countDocuments({ service_provider: serviceProvider._id }),
+          Job.aggregate([
+            {
+              $match: {
+                service_provider: serviceProvider._id,
+                status: "completed",
+              },
+            },
+            { $group: { _id: null, total: { $sum: "$price" } } },
+          ]),
+        ]);
+
+        // Get project statistics (from ProjectJob where selected_provider is this service provider)
+        const projectCount = await ProjectJob.countDocuments({
+          selected_provider: serviceProvider._id,
+        });
+
+        // Calculate total investment (earnings from jobs)
+        const totalInvestment = totalEarnings[0]?.total || 0;
+
+        // Get phone number and name from profile
+        const phone_number = userProfile?.phone_number || "N/A";
+        const full_name =
+          userProfile?.fullname || serviceProvider.username || "N/A";
+
+        return {
+          serviceProvider: {
+            id: serviceProvider._id.toString(),
+            full_name: full_name,
+            email: serviceProvider.email,
+            phone_number: phone_number,
+          },
+          order_count: jobCount, // Jobs count as orders for service providers
+          project_count: projectCount,
+          total_investment: totalInvestment,
+          has_company: !!hasCompany,
+          join_date: serviceProvider.createdAt.toISOString(),
+          status: serviceProvider.isEmailVerified ? "active" : "inactive",
+        };
+      })
+    );
+
+    // 6. Recent Activities
+    const activities = [];
+
+    // Get recent service provider registrations
+    const recentServiceProviders = await User.find({
+      $or: [
+        { user_type: "service_provider" },
+        { accessRoles: { $in: ["service_provider"] } },
+      ],
+    })
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .select("username createdAt");
+
+    recentServiceProviders.forEach((sp) => {
+      activities.push({
+        title: "New Service Provider Registration",
+        detail: `${sp.username} joined as a service provider`,
+        type: "service_provider_registration",
+        time: sp.createdAt,
+      });
+    });
+
+    // Get recent services created
+    const recentServices = await Service.find({})
+      .populate("user", "username")
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .select("service_title user createdAt");
+
+    recentServices.forEach((service) => {
+      activities.push({
+        title: "New Service Created",
+        detail: `${
+          service.user?.username || "Service Provider"
+        } created service "${service.service_title}"`,
+        type: "service_created",
+        time: service.createdAt,
+      });
+    });
+
+    // Get recent completed jobs
+    const recentJobs = await Job.find({ status: "completed" })
+      .populate("service_provider", "username")
+      .populate("service", "service_title")
+      .sort({ completed_date: -1 })
+      .limit(10)
+      .select("service_provider service price completed_date");
+
+    recentJobs.forEach((job) => {
+      activities.push({
+        title: "Job Completed",
+        detail: `${
+          job.service_provider?.username || "Service Provider"
+        } completed "${job.service?.service_title || "Service"}" for PKR ${
+          job.price
+        }`,
+        type: "job_completed",
+        time: job.completed_date,
+      });
+    });
+
+    // Get recent project completions
+    const recentProjects = await ProjectJob.find({
+      status: "completed",
+      selected_provider: { $exists: true },
+    })
+      .populate("selected_provider", "username")
+      .sort({ completed_at: -1 })
+      .limit(10)
+      .select("title selected_provider budget completed_at");
+
+    recentProjects.forEach((project) => {
+      activities.push({
+        title: "Project Completed",
+        detail: `${
+          project.selected_provider?.username || "Service Provider"
+        } completed project "${project.title}" for PKR ${project.budget}`,
+        type: "project_completed",
+        time: project.completed_at,
+      });
+    });
+
+    // Sort activities by time and limit to 20
+    activities.sort((a, b) => new Date(b.time) - new Date(a.time));
+    const sortedActivities = activities.slice(0, 20);
+
+    // Build stats object
+    const stats = {
+      total_service_providers: {
+        value: totalServiceProvidersOverall,
+        trendingValue: calculateTrending(
+          totalServiceProvidersCurrentMonth,
+          totalServiceProvidersPreviousMonth
+        ),
+        isTrending: isTrendingPositive(
+          calculateTrending(
+            totalServiceProvidersCurrentMonth,
+            totalServiceProvidersPreviousMonth
+          )
+        ),
+      },
+      active_service_provider: {
+        value: activeServiceProvidersCount,
+        trendingValue: calculateTrending(
+          activeServiceProvidersCount,
+          previousActiveServiceProvidersCount
+        ),
+        isTrending: isTrendingPositive(
+          calculateTrending(
+            activeServiceProvidersCount,
+            previousActiveServiceProvidersCount
+          )
+        ),
+      },
+      new_this_month: {
+        value: newThisMonthCount,
+        trendingValue: calculateTrending(
+          newThisMonthCount,
+          newPreviousMonthCount
+        ),
+        isTrending: isTrendingPositive(
+          calculateTrending(newThisMonthCount, newPreviousMonthCount)
+        ),
+      },
+      total_earning: {
+        value: overallEarnings,
+        trendingValue: calculateTrending(currentEarnings, previousEarnings),
+        isTrending: isTrendingPositive(
+          calculateTrending(currentEarnings, previousEarnings)
+        ),
+      },
+    };
+
+    const responseData = {
+      message: "Admin service providers data retrieved successfully",
+      stats,
+      service_providers: formattedServiceProviders,
+      activities: sortedActivities,
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error getting admin service providers data:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// Add this function to controllers/adminController.js
+
+// @desc    Get specific service provider details for admin
+// @route   POST /admin/get_service_provider
+// @access  Private (Admin Only)
+exports.getAdminServiceProvider = async (req, res) => {
+  try {
+    const { service_provider_id } = req.body;
+
+    if (!service_provider_id) {
+      return res.status(400).json({ error: "Service provider ID is required" });
+    }
+
+    // Find the service provider
+    const serviceProvider = await User.findById(service_provider_id);
+
+    if (!serviceProvider) {
+      return res.status(404).json({ error: "Service provider not found" });
+    }
+
+    // Verify the user is a service provider
+    const isServiceProvider =
+      serviceProvider.user_type === "service_provider" ||
+      (serviceProvider.accessRoles &&
+        serviceProvider.accessRoles.includes("service_provider"));
+
+    if (!isServiceProvider) {
+      return res.status(400).json({ error: "User is not a service provider" });
+    }
+
+    // Get service provider profile information
+    const [userProfile, companyProfile] = await Promise.all([
+      UserProfile.findOne({ user_id: service_provider_id }),
+      Company.findOne({ user_id: service_provider_id }),
+    ]);
+
+    // Get date ranges for trending calculations
+    const dateRanges = getDateRanges();
+    const {
+      currentMonthStart,
+      currentMonthEnd,
+      previousMonthStart,
+      previousMonthEnd,
+    } = dateRanges;
+
+    // Get service provider statistics
+    const [
+      currentMonthServices,
+      previousMonthServices,
+      totalServices,
+      currentMonthJobs,
+      previousMonthJobs,
+      totalJobs,
+      completedJobs,
+      currentMonthEarnings,
+      previousMonthEarnings,
+      totalEarnings,
+      avgRating,
+    ] = await Promise.all([
+      Service.countDocuments({
+        user: service_provider_id,
+        createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
+      }),
+      Service.countDocuments({
+        user: service_provider_id,
+        createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
+      }),
+      Service.countDocuments({ user: service_provider_id }),
+      Job.countDocuments({
+        service_provider: service_provider_id,
+        createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
+      }),
+      Job.countDocuments({
+        service_provider: service_provider_id,
+        createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
+      }),
+      Job.countDocuments({ service_provider: service_provider_id }),
+      Job.countDocuments({
+        service_provider: service_provider_id,
+        status: "completed",
+      }),
+      Job.aggregate([
+        {
+          $match: {
+            service_provider: serviceProvider._id,
+            status: "completed",
+            completed_date: { $gte: currentMonthStart, $lte: currentMonthEnd },
+          },
+        },
+        { $group: { _id: null, total: { $sum: "$price" } } },
+      ]),
+      Job.aggregate([
+        {
+          $match: {
+            service_provider: serviceProvider._id,
+            status: "completed",
+            completed_date: {
+              $gte: previousMonthStart,
+              $lte: previousMonthEnd,
+            },
+          },
+        },
+        { $group: { _id: null, total: { $sum: "$price" } } },
+      ]),
+      Job.aggregate([
+        {
+          $match: {
+            service_provider: serviceProvider._id,
+            status: "completed",
+          },
+        },
+        { $group: { _id: null, total: { $sum: "$price" } } },
+      ]),
+      Job.aggregate([
+        {
+          $match: {
+            service_provider: serviceProvider._id,
+            status: "completed",
+          },
+        },
+        { $group: { _id: null, avgRating: { $avg: "$feedback.rating" } } },
+      ]),
+    ]);
+
+    const currentEarnings = currentMonthEarnings[0]?.total || 0;
+    const previousEarnings = previousMonthEarnings[0]?.total || 0;
+    const totalEarningsAmount = totalEarnings[0]?.total || 0;
+    const averageRating = avgRating[0]?.avgRating || 0;
+
+    // Generate unique service provider ID
+    const serviceProviderId = `SP${serviceProvider._id
+      .toString()
+      .slice(-8)
+      .toUpperCase()}`;
+
+    // Build personal info
+    const personalInfo = {
+      full_name: userProfile?.fullname || serviceProvider.username || "N/A",
+      status: serviceProvider.isEmailVerified,
+      supplier_id: serviceProviderId, // Using supplier_id field name as per API spec
+      joinedDate: new Date(serviceProvider.createdAt).toLocaleDateString(
+        "en-US",
+        {
+          year: "numeric",
+          month: "short",
+          day: "2-digit",
+        }
+      ),
+      bio: userProfile?.introduction || "No bio available",
+      contact: {
+        phone_number: userProfile?.phone_number || "N/A",
+        email: serviceProvider.email,
+      },
+      service_area:
+        userProfile?.service_location || userProfile?.address || "N/A",
+      account_type: companyProfile
+        ? "Business Provider"
+        : "Individual Provider",
+    };
+
+    // Build stats with trending
+    const stats = [
+      {
+        label: "Active services",
+        value: totalServices,
+        trendingValue: calculateTrending(
+          currentMonthServices,
+          previousMonthServices
+        ),
+        isPrice: false,
+        isTrending: isTrendingPositive(
+          calculateTrending(currentMonthServices, previousMonthServices)
+        ),
+      },
+      {
+        label: "Completed jobs",
+        value: completedJobs,
+        trendingValue: calculateTrending(currentMonthJobs, previousMonthJobs),
+        isPrice: false,
+        isTrending: isTrendingPositive(
+          calculateTrending(currentMonthJobs, previousMonthJobs)
+        ),
+      },
+      {
+        label: "Total Earnings",
+        value: Math.round(totalEarningsAmount),
+        trendingValue: calculateTrending(currentEarnings, previousEarnings),
+        isPrice: true,
+        isTrending: isTrendingPositive(
+          calculateTrending(currentEarnings, previousEarnings)
+        ),
+      },
+      {
+        label: "Average rating",
+        value: parseFloat(averageRating.toFixed(1)),
+        trendingValue: 0, // Rating trending can be complex to calculate
+        isPrice: false,
+        isTrending: true,
+      },
+    ];
+
+    // Get service portfolio (completed projects)
+    const servicePortfolio = await ProjectJob.find({
+      selected_provider: service_provider_id,
+      status: { $in: ["completed", "in_progress"] },
+    })
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .select(
+        "title description budget status createdAt completed_at category"
+      );
+
+    const formattedServicePortfolio = servicePortfolio.map((project) => {
+      let progress = 0;
+      switch (project.status) {
+        case "completed":
+          progress = 100;
+          break;
+        case "in_progress":
+          progress = 75;
+          break;
+        case "pending_client_approval":
+          progress = 90;
+          break;
+        default:
+          progress = 50;
+      }
+
+      return {
+        title: project.title || "Untitled Project",
+        detail: project.description || "No description available",
+        progress: progress,
+        budget: project.budget || 0,
+        status: project.status || "open",
+        type: project.category || "general",
+      };
+    });
+
+    // Get job applications (proposals submitted by service provider)
+    const jobApplications = await ProjectJob.find({
+      "proposals.service_provider_id": service_provider_id,
+    })
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .select("title description budget proposals category createdAt status");
+
+    const formattedJobApplications = jobApplications.map((project) => {
+      // Find this service provider's proposal
+      const proposal = project.proposals.find(
+        (p) => p.service_provider_id.toString() === service_provider_id
+      );
+
+      return {
+        title: project.title || "Untitled Project",
+        status: proposal?.status || "pending",
+        category: project.category || "general",
+        budget: proposal?.proposed_budget || project.budget || 0,
+        detail: project.description || "No description available",
+        datetime: project.createdAt.toISOString(),
+      };
+    });
+
+    // Calculate service provider metrics
+    const completionRate =
+      totalJobs > 0 ? Math.round((completedJobs / totalJobs) * 100) : 0;
+
+    // Calculate on-time delivery (simplified - jobs completed within estimated time)
+    const onTimeJobs = await Job.countDocuments({
+      service_provider: service_provider_id,
+      status: "completed",
+      // Add logic for on-time delivery based on your business rules
+    });
+    const onTimeRate =
+      completedJobs > 0 ? Math.round((onTimeJobs / completedJobs) * 100) : 0;
+
+    // Customer satisfaction based on ratings
+    const customerSatisfaction =
+      averageRating > 0 ? Math.round(averageRating * 20) : 0; // Convert 5-star to percentage
+
+    // Response time (simplified - could be calculated based on message response times)
+    const responseTime = 24; // hours - placeholder
+
+    const serviceProviderMetrics = [
+      {
+        label: "Job completion rate",
+        value: completionRate,
+      },
+      {
+        label: "On-time delivery",
+        value: onTimeRate,
+      },
+      {
+        label: "Customer satisfactions",
+        value: customerSatisfaction,
+      },
+      {
+        label: "Response time",
+        value: responseTime,
+      },
+    ];
+
+    // Get total applications count
+    const totalApplications = await ProjectJob.countDocuments({
+      "proposals.service_provider_id": service_provider_id,
+    });
+
+    // Build service provider info summary
+    const serviceProviderInfo = {
+      status: serviceProvider.isEmailVerified,
+      total_services: totalServices,
+      total_applications: totalApplications,
+      join_date: new Date(serviceProvider.createdAt).toLocaleDateString(
+        "en-US",
+        {
+          year: "numeric",
+          month: "short",
+          day: "2-digit",
+        }
+      ),
+      email_verify: serviceProvider.isEmailVerified,
+    };
+
+    const responseData = {
+      message: "Service provider details retrieved successfully",
+      service_provider: {
+        personalInfo,
+        stats,
+        servicePortfolio: formattedServicePortfolio,
+        jobApplication: formattedJobApplications,
+        serviceProviderMetrics,
+        serviceProviderInfo,
+      },
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error getting service provider details:", err);
+
+    if (err.name === "CastError") {
+      return res
+        .status(400)
+        .json({ error: "Invalid service provider ID format" });
+    }
+
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// Add this function to controllers/adminController.js
+
+// @desc    Get admin companies data
+// @route   GET /admin/get_companies
+// @access  Private (Admin Only)
+exports.getAdminCompanies = async (req, res) => {
+  try {
+    const dateRanges = getDateRanges();
+    const {
+      currentMonthStart,
+      currentMonthEnd,
+      previousMonthStart,
+      previousMonthEnd,
+    } = dateRanges;
+
+    // 1. Total Service Providers with companies (users who have company profiles)
+    const totalServiceProvidersCurrentMonth = await Company.countDocuments({
+      createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
+    });
+
+    const totalServiceProvidersPreviousMonth = await Company.countDocuments({
+      createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
+    });
+
+    const totalServiceProvidersOverall = await Company.countDocuments({});
+
+    // 2. Active Service Providers (companies with active services or recent jobs)
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+
+    // Get companies whose users have active services or recent jobs
+    const companies = await Company.find({}).select("user_id");
+    const companyUserIds = companies.map((company) => company.user_id);
+
+    const [activeFromServices, activeFromJobs] = await Promise.all([
+      Service.distinct("user", {
+        user: { $in: companyUserIds },
+        service_status: true,
+        createdAt: { $gte: thirtyDaysAgo },
+      }),
+      Job.distinct("service_provider", {
+        service_provider: { $in: companyUserIds },
+        createdAt: { $gte: thirtyDaysAgo },
+      }),
+    ]);
+
+    const [previousActiveFromServices, previousActiveFromJobs] =
+      await Promise.all([
+        Service.distinct("user", {
+          user: { $in: companyUserIds },
+          service_status: true,
+          createdAt: { $gte: sixtyDaysAgo, $lt: thirtyDaysAgo },
+        }),
+        Job.distinct("service_provider", {
+          service_provider: { $in: companyUserIds },
+          createdAt: { $gte: sixtyDaysAgo, $lt: thirtyDaysAgo },
+        }),
+      ]);
+
+    // Combine and deduplicate active service providers
+    const activeServiceProvidersSet = new Set([
+      ...activeFromServices,
+      ...activeFromJobs,
+    ]);
+    const previousActiveServiceProvidersSet = new Set([
+      ...previousActiveFromServices,
+      ...previousActiveFromJobs,
+    ]);
+
+    const activeServiceProvidersCount = activeServiceProvidersSet.size;
+    const previousActiveServiceProvidersCount =
+      previousActiveServiceProvidersSet.size;
+
+    // 3. New This Month
+    const newThisMonthCount = totalServiceProvidersCurrentMonth;
+    const newPreviousMonthCount = totalServiceProvidersPreviousMonth;
+
+    // 4. Total Earnings (sum of all completed jobs for company service providers)
+    const currentMonthEarnings = await Job.aggregate([
+      {
+        $match: {
+          service_provider: { $in: companyUserIds },
+          status: "completed",
+          completed_date: { $gte: currentMonthStart, $lte: currentMonthEnd },
+        },
+      },
+      { $group: { _id: null, total: { $sum: "$price" } } },
+    ]);
+
+    const previousMonthEarnings = await Job.aggregate([
+      {
+        $match: {
+          service_provider: { $in: companyUserIds },
+          status: "completed",
+          completed_date: { $gte: previousMonthStart, $lte: previousMonthEnd },
+        },
+      },
+      { $group: { _id: null, total: { $sum: "$price" } } },
+    ]);
+
+    const currentEarnings = currentMonthEarnings[0]?.total || 0;
+    const previousEarnings = previousMonthEarnings[0]?.total || 0;
+
+    // Get total earnings overall for companies
+    const totalEarningsOverall = await Job.aggregate([
+      {
+        $match: {
+          service_provider: { $in: companyUserIds },
+          status: "completed",
+        },
+      },
+      { $group: { _id: null, total: { $sum: "$price" } } },
+    ]);
+    const overallEarnings = totalEarningsOverall[0]?.total || 0;
+
+    // 5. Get all companies with their details
+    const allCompanies = await Company.find({})
+      .populate("user_id", "username email createdAt isEmailVerified")
+      .sort({ createdAt: -1 })
+      .limit(100);
+
+    // Get detailed company data
+    const formattedCompanies = await Promise.all(
+      allCompanies.map(async (company) => {
+        // Get services count for this company
+        const servicesCount = await Service.countDocuments({
+          user: company.user_id._id,
+        });
+
+        // Format company data
+        return {
+          company: {
+            full_name:
+              company.name ||
+              company.owner_name ||
+              company.user_id.username ||
+              "N/A",
+            email: company.business_email || company.user_id.email,
+          },
+          services: servicesCount,
+          experience: company.experience || 0,
+          location: company.service_location || company.address || "N/A",
+          join_date: company.createdAt.toISOString(),
+          status: company.user_id.isEmailVerified,
+        };
+      })
+    );
+
+    // Build stats object
+    const stats = {
+      total_service_providers: {
+        value: totalServiceProvidersOverall,
+        trendingValue: calculateTrending(
+          totalServiceProvidersCurrentMonth,
+          totalServiceProvidersPreviousMonth
+        ),
+        isTrending: isTrendingPositive(
+          calculateTrending(
+            totalServiceProvidersCurrentMonth,
+            totalServiceProvidersPreviousMonth
+          )
+        ),
+      },
+      active_service_provider: {
+        value: activeServiceProvidersCount,
+        trendingValue: calculateTrending(
+          activeServiceProvidersCount,
+          previousActiveServiceProvidersCount
+        ),
+        isTrending: isTrendingPositive(
+          calculateTrending(
+            activeServiceProvidersCount,
+            previousActiveServiceProvidersCount
+          )
+        ),
+      },
+      new_this_month: {
+        value: newThisMonthCount,
+        trendingValue: calculateTrending(
+          newThisMonthCount,
+          newPreviousMonthCount
+        ),
+        isTrending: isTrendingPositive(
+          calculateTrending(newThisMonthCount, newPreviousMonthCount)
+        ),
+      },
+      total_earning: {
+        value: overallEarnings,
+        trendingValue: calculateTrending(currentEarnings, previousEarnings),
+        isTrending: isTrendingPositive(
+          calculateTrending(currentEarnings, previousEarnings)
+        ),
+      },
+    };
+
+    const responseData = {
+      message: "Admin companies data retrieved successfully",
+      stats,
+      companies: formattedCompanies,
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error getting admin companies data:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// Add this function to controllers/adminController.js
+
+// @desc    Get specific company details for admin
+// @route   POST /admin/get_company
+// @access  Private (Admin Only)
+exports.getAdminCompany = async (req, res) => {
+  try {
+    const { company_id } = req.body;
+
+    if (!company_id) {
+      return res.status(400).json({ error: "Company ID is required" });
+    }
+
+    // Find the company
+    const company = await Company.findById(company_id).populate(
+      "user_id",
+      "username email createdAt isEmailVerified user_type"
+    );
+
+    if (!company) {
+      return res.status(404).json({ error: "Company not found" });
+    }
+
+    // Get company documents
+    const companyDocuments = await CompanyDocument.find({
+      user_id: company.user_id._id,
+    }).select("title dated doc_image createdAt updatedAt");
+
+    // Get user profile for additional company information
+    const userProfile = await UserProfile.findOne({
+      user_id: company.user_id._id,
+    });
+
+    // Get services created by this company
+    const services = await Service.find({
+      user: company.user_id._id,
+    }).select("service_title service_category service_status createdAt");
+
+    // Get job statistics for this company
+    const [totalJobs, completedJobs, totalEarnings] = await Promise.all([
+      Job.countDocuments({ service_provider: company.user_id._id }),
+      Job.countDocuments({
+        service_provider: company.user_id._id,
+        status: "completed",
+      }),
+      Job.aggregate([
+        {
+          $match: {
+            service_provider: company.user_id._id,
+            status: "completed",
+          },
+        },
+        { $group: { _id: null, total: { $sum: "$price" } } },
+      ]),
+    ]);
+
+    // Get project statistics
+    const [totalProjects, completedProjects] = await Promise.all([
+      ProjectJob.countDocuments({ selected_provider: company.user_id._id }),
+      ProjectJob.countDocuments({
+        selected_provider: company.user_id._id,
+        status: "completed",
+      }),
+    ]);
+
+    // Get certificates if any
+    const certificates = await Certificate.find({
+      user_id: company.user_id._id,
+    }).select("title dated certificate_img createdAt");
+
+    // Format company documents
+    const formattedDocuments = companyDocuments.map((doc) => ({
+      id: doc._id.toString(),
+      title: doc.title,
+      dated: doc.dated.toISOString(),
+      doc_image: doc.doc_image,
+      uploaded_at: doc.createdAt.toISOString(),
+      updated_at: doc.updatedAt.toISOString(),
+    }));
+
+    // Format certificates
+    const formattedCertificates = certificates.map((cert) => ({
+      id: cert._id.toString(),
+      title: cert.title,
+      dated: cert.dated.toISOString(),
+      certificate_img: cert.certificate_img,
+      uploaded_at: cert.createdAt.toISOString(),
+    }));
+
+    // Format services
+    const formattedServices = services.map((service) => ({
+      id: service._id.toString(),
+      title: service.service_title,
+      category: service.service_category,
+      status: service.service_status ? "active" : "inactive",
+      created_at: service.createdAt.toISOString(),
+    }));
+
+    // Build comprehensive company object
+    const companyData = {
+      // Basic company information
+      id: company._id.toString(),
+      name: company.name || "N/A",
+      business_email: company.business_email || company.user_id.email,
+      address: company.address || "N/A",
+      experience: company.experience || 0,
+      description: company.description || "No description available",
+
+      // Owner information
+      owner_name: company.owner_name || "N/A",
+      owner_cnic: company.owner_cnic || "N/A",
+      phone_number: company.phone_number || userProfile?.phone_number || "N/A",
+      service_location:
+        company.service_location || userProfile?.service_location || "N/A",
+
+      // Company assets
+      logo: company.logo || "",
+      banner: company.banner || "",
+      license_img: company.license_img || "",
+
+      // Registration details
+      BRN: company.BRN || "N/A",
+      tax_ntn: company.tax_ntn || "N/A",
+
+      // Services and tags
+      services_tags: company.services_tags || [],
+
+      // User account information
+      user_account: {
+        id: company.user_id._id.toString(),
+        username: company.user_id.username,
+        email: company.user_id.email,
+        user_type: company.user_id.user_type,
+        is_email_verified: company.user_id.isEmailVerified,
+        joined_date: company.user_id.createdAt.toISOString(),
+      },
+
+      // Company statistics
+      statistics: {
+        total_services: services.length,
+        active_services: services.filter((s) => s.service_status).length,
+        total_jobs: totalJobs,
+        completed_jobs: completedJobs,
+        total_projects: totalProjects,
+        completed_projects: completedProjects,
+        total_earnings: totalEarnings[0]?.total || 0,
+        job_completion_rate:
+          totalJobs > 0 ? Math.round((completedJobs / totalJobs) * 100) : 0,
+        project_completion_rate:
+          totalProjects > 0
+            ? Math.round((completedProjects / totalProjects) * 100)
+            : 0,
+      },
+
+      // Documents and certificates
+      company_documents: formattedDocuments,
+      certificates: formattedCertificates,
+
+      // Services offered
+      services: formattedServices,
+
+      // Profile information
+      profile_info: {
+        profile_img: userProfile?.profile_img || "",
+        banner_img: userProfile?.banner_img || "",
+        intro_video: userProfile?.intro_video || "",
+        introduction: userProfile?.introduction || "",
+        website: userProfile?.website || "",
+        fullname: userProfile?.fullname || "",
+        cnic: userProfile?.cnic || "",
+      },
+
+      // Timestamps
+      created_at: company.createdAt.toISOString(),
+      updated_at: company.updatedAt.toISOString(),
+
+      // Status information
+      status: {
+        is_active: company.user_id.isEmailVerified,
+        account_status: company.user_id.isEmailVerified ? "active" : "inactive",
+        has_services: services.length > 0,
+        has_documents: companyDocuments.length > 0,
+        has_certificates: certificates.length > 0,
+        profile_completeness: calculateProfileCompleteness(
+          company,
+          userProfile
+        ),
+      },
+    };
+
+    const responseData = {
+      message: "Company details retrieved successfully",
+      company: companyData,
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (err) {
+    console.error("Error getting company details:", err);
+
+    if (err.name === "CastError") {
+      return res.status(400).json({ error: "Invalid company ID format" });
+    }
+
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// Helper function to calculate profile completeness
+const calculateProfileCompleteness = (company, userProfile) => {
+  let completeness = 0;
+  const totalFields = 15;
+
+  // Company fields
+  if (company.name) completeness++;
+  if (company.business_email) completeness++;
+  if (company.address) completeness++;
+  if (company.description) completeness++;
+  if (company.owner_name) completeness++;
+  if (company.phone_number) completeness++;
+  if (company.service_location) completeness++;
+  if (company.logo) completeness++;
+  if (company.experience > 0) completeness++;
+
+  // Profile fields
+  if (userProfile?.fullname) completeness++;
+  if (userProfile?.introduction) completeness++;
+  if (userProfile?.profile_img) completeness++;
+  if (userProfile?.website) completeness++;
+  if (userProfile?.cnic) completeness++;
+  if (company.services_tags && company.services_tags.length > 0) completeness++;
+
+  return Math.round((completeness / totalFields) * 100);
+};
