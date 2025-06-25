@@ -6,7 +6,7 @@ const SupplierSiteBuilder = require("../models/SupplierSiteBuilder");
 // Helper function to format product data (reused from home page controller)
 const formatProductData = (product) => {
   if (!product) return null;
-
+  console.log(product);
   // Calculate discount price and rating
   const price = product.price || 0;
   const compareAtPrice = product.compare_at_price || 0;
@@ -19,6 +19,7 @@ const formatProductData = (product) => {
   // Mock rating data (you can replace with actual rating system)
   const rating = 4.5; // Default rating
   const ratingCount = Math.floor(Math.random() * 100) + 10; // Mock rating count
+  const creation_date = product.createdAt;
 
   return {
     id: product._id,
@@ -29,6 +30,7 @@ const formatProductData = (product) => {
     rating: rating,
     rating_count: ratingCount,
     stock: product.quantity || 0,
+    creation_date: creation_date,
   };
 };
 
@@ -94,7 +96,7 @@ exports.getStoreCollectionProducts = async (req, res) => {
       .populate({
         path: "product_list",
         select:
-          "title price media url_handle status category description compare_at_price quantity",
+          "title price media url_handle status category description compare_at_price quantity createdAt",
         match: { status: "active" }, // Only get active products
         options: { sort: { createdAt: -1 } }, // Sort by newest first
       })
