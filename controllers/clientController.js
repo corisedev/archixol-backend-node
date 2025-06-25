@@ -1786,9 +1786,9 @@ exports.getConfirmedOrderDetail = async (req, res) => {
     }
 
     // Check if order is confirmed (not pending)
-    if (order.status === "pending") {
-      return res.status(400).json({ error: "Order is not yet confirmed" });
-    }
+    // if (order.status === "pending") {
+    //   return res.status(400).json({ error: "Order is not yet confirmed" });
+    // }
 
     // Parse customer details from notes if available
     let customerDetails = {};
