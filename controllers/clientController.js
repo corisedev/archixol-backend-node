@@ -8,6 +8,7 @@ const Customer = require("../models/Customer");
 const Service = require("../models/Service");
 const UserProfile = require("../models/UserProfile");
 const { encryptData } = require("../utils/encryptResponse");
+const mongoose = require("mongoose");
 const { notify, notificationService } = require("../utils/notificationHelpers");
 
 // @desc    Get client dashboard data
@@ -109,11 +110,13 @@ exports.getJobsAndProjects = async (req, res) => {
     });
 
     const budgetResult = await ProjectJob.aggregate([
-      { $match: { client_id: userId } },
+      { $match: { client_id: new mongoose.Types.ObjectId(userId) } },
       { $group: { _id: null, totalBudget: { $sum: "$budget" } } },
     ]);
     const totalBudget =
       budgetResult.length > 0 ? budgetResult[0].totalBudget : 0;
+
+    console.log(budgetResult);
 
     const completed = await ProjectJob.countDocuments({
       client_id: userId,
@@ -1438,7 +1441,7 @@ exports.getProjectsByStatus = async (req, res) => {
 
     // Calculate summary statistics
     const summaryStats = await ProjectJob.aggregate([
-      { $match: { client_id: userId } },
+      { $match: { client_id: new mongoose.Types.ObjectId(userId) } },
       {
         $group: {
           _id: "$status",
@@ -1613,6 +1616,16 @@ exports.completeProject = async (req, res) => {
       });
     }
 
+    const projectServiceProvider = await Job.findOne({
+      project_job: project_id,
+      service_provider: userId,
+    });
+
+    console.log("SERVICE", projectServiceProvider);
+    if (!projectServiceProvider) {
+      return;
+    }
+
     // Allow completion from both "in_progress" and "pending_client_approval" statuses
     if (!["in_progress", "pending_client_approval"].includes(project.status)) {
       return res.status(400).json({
@@ -1630,6 +1643,7 @@ exports.completeProject = async (req, res) => {
 
     const wasSubmittedByProvider = project.status === "pending_client_approval";
     const previousStatus = project.status;
+    projectServiceProvider.status = "completed";
 
     // Update project status to completed
     project.status = "completed";
@@ -1655,6 +1669,7 @@ exports.completeProject = async (req, res) => {
     project.note = (project.note || "") + completionText;
 
     await project.save();
+    await projectServiceProvider.save();
 
     // NOW update service provider statistics (only when truly completed)
     if (project.selected_provider) {

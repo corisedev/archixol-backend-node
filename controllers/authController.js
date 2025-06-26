@@ -48,16 +48,16 @@ exports.signup = [
       `;
 
       try {
-        console.log("SENDING MAIL");
-        await sendEmail({
-          email: user.email,
-          subject: "Archixol Email Verification",
-          message,
-        });
-        console.log("Email sent");
+        // console.log("SENDING MAIL");
+        // await sendEmail({
+        //   email: user.email,
+        //   subject: "Archixol Email Verification",
+        //   message,
+        // });
+        // console.log("Email sent");
 
         const responseData = {
-          message: "Email verification sent, please check your email",
+          message: "Registration successfull!",
         };
 
         const encryptedData = encryptData(responseData);
@@ -130,6 +130,7 @@ exports.login = [
         username: user.username,
         firstLogin: isFirstLogin,
         accessRoles: user.accessRoles,
+        isCompany: user.company || false,
         isVerify: user.user_type === "admin" ? true : user.isEmailVerified,
         fullname: userProfile ? userProfile.fullname : null,
         profile_img: userProfile ? userProfile.profile_img : "",

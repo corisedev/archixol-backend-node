@@ -46,7 +46,6 @@ exports.getStoreNavFooter = async (req, res) => {
     // Check if the store is published
     const siteBuilder = await SupplierSiteBuilder.findOne({
       supplier_id: supplierId,
-      is_published: true,
     });
 
     if (!siteBuilder) {

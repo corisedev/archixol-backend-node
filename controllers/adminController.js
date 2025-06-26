@@ -11,6 +11,9 @@ const Service = require("../models/Service");
 const ProjectJob = require("../models/ProjectJob");
 const { encryptData } = require("../utils/encryptResponse");
 const SupplierStore = require("../models/SupplierStore");
+const Company = require("../models/Company");
+const CompanyDocument = require("../models/CompanyDocument");
+const Certificate = require("../models/Certificate");
 const { StoreDetails } = require("../models/SupplierSettings");
 
 // Helper function to calculate trending percentage
@@ -101,41 +104,41 @@ exports.getAdminDashboard = async (req, res) => {
 
     // 1. Total Clients
     const totalClientsCurrentMonth = await User.countDocuments({
-      user_type: "client",
+      accessRoles: "client",
       createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
     });
     const totalClientsPreviousMonth = await User.countDocuments({
-      user_type: "client",
+      accessRoles: "client",
       createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
     });
     const totalClientsOverall = await User.countDocuments({
-      user_type: "client",
+      accessRoles: "client",
     });
 
     // 2. Active Service Providers
     const activeServiceProvidersCurrentMonth = await User.countDocuments({
-      user_type: "service_provider",
+      accessRoles: "service_provider",
       createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
     });
     const activeServiceProvidersPreviousMonth = await User.countDocuments({
-      user_type: "service_provider",
+      accessRoles: "service_provider",
       createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
     });
     const activeServiceProvidersOverall = await User.countDocuments({
-      user_type: "service_provider",
+      accessRoles: "service_provider",
     });
 
     // 3. Total Suppliers
     const totalSuppliersCurrentMonth = await User.countDocuments({
-      user_type: "supplier",
+      accessRoles: "supplier",
       createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
     });
     const totalSuppliersPreviousMonth = await User.countDocuments({
-      user_type: "supplier",
+      accessRoles: "supplier",
       createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
     });
     const totalSuppliersOverall = await User.countDocuments({
-      user_type: "supplier",
+      accessRoles: "supplier",
     });
 
     // 4. Total Revenue (from both Orders and ClientOrders)
@@ -1428,17 +1431,17 @@ exports.getAdminCustomers = async (req, res) => {
 
     // 1. Total Customers (users with user_type 'client' or accessRoles containing 'client')
     const totalCustomersCurrentMonth = await User.countDocuments({
-      $or: [{ user_type: "client" }, { accessRoles: { $in: ["client"] } }],
+      accessRoles: "client",
       createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
     });
 
     const totalCustomersPreviousMonth = await User.countDocuments({
-      $or: [{ user_type: "client" }, { accessRoles: { $in: ["client"] } }],
+      accessRoles: "client",
       createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
     });
 
     const totalCustomersOverall = await User.countDocuments({
-      $or: [{ user_type: "client" }, { accessRoles: { $in: ["client"] } }],
+      accessRoles: "client",
     });
 
     // 2. Active Customers (customers who have placed orders or created projects in last 30 days)
@@ -2767,7 +2770,7 @@ exports.getAdminProjects = async (req, res) => {
 
     // Get all projects with client details for the projects list
     const projects = await ProjectJob.find({})
-      .populate("client_id", "username email")
+      .populate("_id client_id", "username email")
       .sort({ createdAt: -1 })
       .limit(100)
       .select("title category city budget createdAt status client_id");
@@ -2780,6 +2783,7 @@ exports.getAdminProjects = async (req, res) => {
       amount: project.budget || 0,
       date: project.createdAt.toISOString(),
       status: project.status || "open",
+      id: project._id,
     }));
 
     // Build stats object
@@ -2986,26 +2990,19 @@ exports.getAdminServiceProviders = async (req, res) => {
 
     // 1. Total Service Providers (users with user_type 'service_provider' or accessRoles containing 'service_provider')
     const totalServiceProvidersCurrentMonth = await User.countDocuments({
-      $or: [
-        { user_type: "service_provider" },
-        { accessRoles: { $in: ["service_provider"] } },
-      ],
+      accessRoles: "service_provider",
       createdAt: { $gte: currentMonthStart, $lte: currentMonthEnd },
     });
 
+    console.log(totalServiceProvidersCurrentMonth);
+
     const totalServiceProvidersPreviousMonth = await User.countDocuments({
-      $or: [
-        { user_type: "service_provider" },
-        { accessRoles: { $in: ["service_provider"] } },
-      ],
+      accessRoles: "service_provider",
       createdAt: { $gte: previousMonthStart, $lte: previousMonthEnd },
     });
 
     const totalServiceProvidersOverall = await User.countDocuments({
-      $or: [
-        { user_type: "service_provider" },
-        { accessRoles: { $in: ["service_provider"] } },
-      ],
+      accessRoles: "service_provider",
     });
 
     // 2. Active Service Providers (those who have active services or recent job activity)
@@ -3085,10 +3082,7 @@ exports.getAdminServiceProviders = async (req, res) => {
 
     // 5. Get all service providers with their details
     const serviceProviders = await User.find({
-      $or: [
-        { user_type: "service_provider" },
-        { accessRoles: { $in: ["service_provider"] } },
-      ],
+      accessRoles: "service_provider",
     })
       .select("_id username email createdAt isEmailVerified")
       .sort({ createdAt: -1 })
@@ -3156,10 +3150,7 @@ exports.getAdminServiceProviders = async (req, res) => {
 
     // Get recent service provider registrations
     const recentServiceProviders = await User.find({
-      $or: [
-        { user_type: "service_provider" },
-        { accessRoles: { $in: ["service_provider"] } },
-      ],
+      accessRoles: "service_provider",
     })
       .sort({ createdAt: -1 })
       .limit(10)
@@ -3766,7 +3757,7 @@ exports.getAdminCompanies = async (req, res) => {
 
     // 5. Get all companies with their details
     const allCompanies = await Company.find({})
-      .populate("user_id", "username email createdAt isEmailVerified")
+      .populate("_id user_id", "username email createdAt isEmailVerified")
       .sort({ createdAt: -1 })
       .limit(100);
 
@@ -3781,6 +3772,7 @@ exports.getAdminCompanies = async (req, res) => {
         // Format company data
         return {
           company: {
+            _id: company._id,
             full_name:
               company.name ||
               company.owner_name ||

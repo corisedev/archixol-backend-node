@@ -42,7 +42,7 @@ exports.switchRole = async (req, res) => {
         user_type: user.user_type,
         accessRoles: user.accessRoles,
         isEmailVerified: user.isEmailVerified,
-        firstLogin: user.firstLogin,
+        firstLogin: false,
       },
     };
 

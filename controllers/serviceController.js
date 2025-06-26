@@ -958,6 +958,15 @@ exports.completeProjectFromProvider = async (req, res) => {
       select: "username email user_type",
     });
 
+    const projectServiceProvider = await Job.findOne({
+      project_job: project_id,
+      service_provider: userId,
+    });
+
+    console.log("SERVICE", projectServiceProvider);
+    if (!projectServiceProvider) {
+      return;
+    }
     if (!project) {
       return res.status(404).json({
         error: "Project not found or you don't have permission to complete it",
@@ -973,6 +982,8 @@ exports.completeProjectFromProvider = async (req, res) => {
     // Instead of marking as completed, mark as "pending_client_approval"
     project.status = "pending_client_approval";
     project.provider_completed_at = new Date(); // New field
+    projectServiceProvider.status = "pending_client_approval";
+    projectServiceProvider.delivery_date = new Date();
 
     // Add completion notes
     if (completion_notes) {
@@ -981,6 +992,7 @@ exports.completeProjectFromProvider = async (req, res) => {
     }
 
     await project.save();
+    await projectServiceProvider.save();
 
     // DON'T update statistics yet - wait for client confirmation
 

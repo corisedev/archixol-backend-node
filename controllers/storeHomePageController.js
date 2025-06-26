@@ -72,7 +72,6 @@ exports.getStoreHomePage = async (req, res) => {
     // Get published site builder configuration with populated data
     const siteBuilder = await SupplierSiteBuilder.findOne({
       supplier_id: supplierId,
-      is_published: true,
     })
       .populate({
         path: "sections.collection_id",
@@ -100,7 +99,7 @@ exports.getStoreHomePage = async (req, res) => {
 
     if (!siteBuilder) {
       return res.status(404).json({
-        error: "Store not found or not published",
+        error: "Store not found",
       });
     }
 

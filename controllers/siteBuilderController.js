@@ -618,7 +618,6 @@ exports.getPublicStore = async (req, res) => {
     // Find published site builder configuration
     const siteBuilder = await SupplierSiteBuilder.findOne({
       supplier_id: supplierId,
-      is_published: true,
     })
       .populate({
         path: "sections.collection_id",
