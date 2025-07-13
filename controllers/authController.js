@@ -40,11 +40,9 @@ exports.signup = [
       await user.save();
 
       const verificationUrl = `${process.env.FRONTEND_URL}/email-verified/${verificationToken}`;
-      console.log(verificationUrl);
       const message = `
         <h1>Email Verification</h1>
         <p>Please click the link below to verify your email:</p>
-        <a href="${verificationUrl}" target="_blank">Verify Email</a>
       `;
 
       try {

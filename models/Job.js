@@ -31,6 +31,7 @@ const JobSchema = new mongoose.Schema({
       "completed",
       "cancelled",
       "rejected",
+      "pending_client_approval",
     ],
     default: "requested",
   },

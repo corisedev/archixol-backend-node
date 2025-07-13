@@ -60,7 +60,6 @@ exports.updateSiteBuilder = async (req, res) => {
           position: index,
         };
 
-        // Handle different section types with validation
         switch (section.type) {
           case "banner":
             if (section.imageUrl) {
@@ -112,7 +111,6 @@ exports.updateSiteBuilder = async (req, res) => {
                   console.warn(
                     `❌ Collection ${section.collection_id} not found or doesn't belong to supplier`
                   );
-                  // Skip this section if collection is invalid
                   continue;
                 }
               } catch (error) {
