@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const User = require("../models/User");
 const Company = require("../models/Company");
+const AdminRole = require("../models/AdminRole");
 const sendEmail = require("../utils/email");
 const {
   validateSignup,
@@ -120,6 +121,53 @@ exports.login = [
         );
       }
 
+      // ✅ GET ADMIN ROLE AND PERMISSIONS (NEW RBAC FEATURE)
+      let roleAccess = null;
+      if (user.isAdmin) {
+        try {
+          const adminRole = await AdminRole.findOne({ name: user.adminRole });
+
+          if (adminRole) {
+            // Get all available permissions for reference
+            const allPermissions = AdminRole.getAllPermissions();
+
+            roleAccess = {
+              role: {
+                name: adminRole.name,
+                display_name: adminRole.display_name,
+                description: adminRole.description,
+              },
+              permissions:
+                user.adminPermissions || adminRole.default_permissions,
+              is_super_admin: user.isSuperAdmin,
+              is_active: !user.isDeactivated,
+              all_permissions: allPermissions, // For frontend reference
+            };
+          } else if (user.isSuperAdmin) {
+            // Super admin gets all permissions
+            const allPermissions = AdminRole.getAllPermissions();
+            const allPermissionKeys = allPermissions.reduce((acc, category) => {
+              return acc.concat(category.permissions.map((p) => p.key));
+            }, []);
+
+            roleAccess = {
+              role: {
+                name: "super_admin",
+                display_name: "Super Administrator",
+                description: "Full system access with all permissions",
+              },
+              permissions: allPermissionKeys,
+              is_super_admin: true,
+              is_active: true,
+              all_permissions: allPermissions,
+            };
+          }
+        } catch (roleError) {
+          console.error("Error fetching admin role during login:", roleError);
+          // Don't fail login if role fetch fails, just log it
+        }
+      }
+
       const token = user.getSignedJwtToken();
 
       const user_data = {
@@ -132,6 +180,10 @@ exports.login = [
         isVerify: user.user_type === "admin" ? true : user.isEmailVerified,
         fullname: userProfile ? userProfile.fullname : null,
         profile_img: userProfile ? userProfile.profile_img : "",
+        // ✅ ADD ADMIN RBAC DATA
+        isAdmin: user.isAdmin || false,
+        isSuperAdmin: user.isSuperAdmin || false,
+        role_access: roleAccess, // This contains role and permissions data
       };
 
       const responseData = {

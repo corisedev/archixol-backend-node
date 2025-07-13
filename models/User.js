@@ -1,4 +1,4 @@
-// models/User.js (Updated with new fields)
+// models/User.js (Updated with RBAC fields)
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -58,23 +58,48 @@ const UserSchema = new mongoose.Schema({
     type: Boolean,
     default: false,
   },
+
+  // ✅ UPDATED RBAC FIELDS
   adminRole: {
     type: String,
     default: null,
+    // Reference to AdminRole.name field
   },
   adminPermissions: {
     type: [String],
     default: [],
-    // Example permissions: ['manage_users', 'view_analytics', 'manage_orders', 'manage_content']
   },
-  // ✅ NEW FIELDS ADDED
+
+  // Account status for admins
+  isDeactivated: {
+    type: Boolean,
+    default: false,
+  },
+
+  // Last login tracking
+  lastLogin: {
+    type: Date,
+    default: null,
+  },
+
+  // Login attempt tracking
+  loginAttempts: {
+    type: Number,
+    default: 0,
+  },
+  lockedUntil: {
+    type: Date,
+    default: null,
+  },
+
+  // ✅ EXISTING FIELDS
   firstLogin: {
     type: Boolean,
     default: false,
   },
   accessRoles: {
     type: [String],
-    enum: ["client", "supplier", "service_provider"],
+    enum: ["client", "supplier", "service_provider", "admin"],
     default: ["client"], // Default to client role
   },
   emailVerificationToken: String,
@@ -95,6 +120,36 @@ UserSchema.pre("save", async function (next) {
 
   const salt = await bcrypt.genSalt(10);
   this.password = await bcrypt.hash(this.password, salt);
+});
+
+// ✅ UPDATE PRE-SAVE HOOK FOR RBAC
+UserSchema.pre("save", function (next) {
+  // Update last login when user logs in
+  if (this.isModified("lastLogin")) {
+    this.loginAttempts = 0; // Reset login attempts on successful login
+    this.lockedUntil = null; // Clear any account locks
+  }
+
+  // Ensure admin users have proper role setup
+  if (this.isAdmin && !this.adminRole && !this.isSuperAdmin) {
+    // Assign default role if none specified
+    this.adminRole = "admin";
+  }
+
+  // Clear admin fields if user is not admin
+  if (!this.isAdmin) {
+    this.adminRole = null;
+    this.adminPermissions = [];
+    this.isSuperAdmin = false;
+    this.isDeactivated = false;
+  }
+
+  // Super admin cannot be deactivated
+  if (this.isSuperAdmin) {
+    this.isDeactivated = false;
+  }
+
+  next();
 });
 
 // Match user entered password to hashed password in database
@@ -142,5 +197,74 @@ UserSchema.methods.getResetPasswordToken = function () {
 
   return resetToken;
 };
+
+// ✅ NEW RBAC METHODS
+
+// Check if user has specific permission
+UserSchema.methods.hasPermission = function (permission) {
+  if (!this.isAdmin) return false;
+  if (this.isSuperAdmin) return true; // Super admin has all permissions
+  if (this.isDeactivated) return false; // Deactivated admins have no permissions
+
+  return this.adminPermissions && this.adminPermissions.includes(permission);
+};
+
+// Check if user has all specified permissions
+UserSchema.methods.hasAllPermissions = function (permissions) {
+  if (!this.isAdmin) return false;
+  if (this.isSuperAdmin) return true;
+  if (this.isDeactivated) return false;
+
+  if (!this.adminPermissions) return false;
+  return permissions.every((permission) =>
+    this.adminPermissions.includes(permission)
+  );
+};
+
+// Check if user has any of the specified permissions
+UserSchema.methods.hasAnyPermission = function (permissions) {
+  if (!this.isAdmin) return false;
+  if (this.isSuperAdmin) return true;
+  if (this.isDeactivated) return false;
+
+  if (!this.adminPermissions) return false;
+  return permissions.some((permission) =>
+    this.adminPermissions.includes(permission)
+  );
+};
+
+// Track login attempt
+UserSchema.methods.trackLoginAttempt = function () {
+  this.loginAttempts += 1;
+
+  // Lock account after 5 failed attempts for 30 minutes
+  if (this.loginAttempts >= 5) {
+    this.lockedUntil = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
+  }
+
+  return this.save();
+};
+
+// Check if account is locked
+UserSchema.methods.isLocked = function () {
+  return this.lockedUntil && this.lockedUntil > Date.now();
+};
+
+// Update last login
+UserSchema.methods.updateLastLogin = function () {
+  this.lastLogin = new Date();
+  this.loginAttempts = 0;
+  this.lockedUntil = null;
+  return this.save();
+};
+
+// Virtual for checking if admin is active
+UserSchema.virtual("isActiveAdmin").get(function () {
+  return this.isAdmin && !this.isDeactivated;
+});
+
+// Make sure virtuals are included when converting to JSON
+UserSchema.set("toJSON", { virtuals: true });
+UserSchema.set("toObject", { virtuals: true });
 
 module.exports = mongoose.model("User", UserSchema);
