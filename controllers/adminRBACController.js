@@ -91,6 +91,59 @@ exports.createAdmin = async (req, res) => {
   }
 };
 
+// @desc    Get specific admin details
+// @route   POST /admin/get_admin
+// @access  Private (Super Admin Only)
+exports.getAdmin = async (req, res) => {
+  try {
+    const { admin_id } = req.body;
+
+    // Check if current user is super admin
+    if (!req.user.isSuperAdmin) {
+      return res.status(403).json({
+        error: "Access denied. Super admin privileges required.",
+      });
+    }
+
+    // Find the admin by ID
+    const admin = await User.findById(admin_id).select("-password");
+
+    if (!admin || !admin.isAdmin) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    // Get admin profile
+    const UserProfile = require("../models/UserProfile");
+    const profile = await UserProfile.findOne({ user_id: admin._id });
+
+    // Prepare admin data
+    const adminData = {
+      id: admin._id,
+      full_name: profile ? profile.fullname : "",
+      username: admin.username,
+      email: admin.email,
+      is_active: !admin.isDeactivated,
+      role: admin.adminRole,
+      permissions: admin.adminPermissions,
+      created_at: admin.createdAt,
+      is_super_admin: admin.isSuperAdmin,
+      last_login: admin.lastLogin || null,
+      updated_at: admin.updatedAt,
+    };
+
+    const responseData = {
+      message: "Admin details retrieved successfully",
+      admin: adminData,
+    };
+
+    const encryptedData = encryptData(responseData);
+    res.status(200).json({ data: encryptedData });
+  } catch (error) {
+    console.error("Error getting admin:", error);
+    res.status(500).json({ error: "Server error while retrieving admin" });
+  }
+};
+
 // @desc    Get all admins
 // @route   GET /admin/get_admins
 // @access  Private (Super Admin Only)
@@ -107,10 +160,11 @@ exports.getAllAdmins = async (req, res) => {
     const admins = await User.find({
       user_type: "admin",
       isAdmin: true,
+      isSuperAdmin: false,
     })
       .select("-password")
       .populate({
-        path: "user_id",
+        path: "_id",
         select: "fullname",
         model: "UserProfile",
         localField: "_id",
@@ -125,11 +179,12 @@ exports.getAllAdmins = async (req, res) => {
       const profile = await UserProfile.findOne({ user_id: admin._id });
 
       adminList.push({
-        id: admin._id,
-        full_name: profile ? profile.fullname : "",
+        id: admin._id._id,
+        user_id: admin._id.user_id,
+        full_name: admin._id.fullname ? admin._id.fullname : "",
         username: admin.username,
         email: admin.email,
-        is_active: !admin.isDeactivated || true,
+        is_active: !admin.isDeactivated,
         role: admin.adminRole,
         permissions: admin.adminPermissions,
         created_at: admin.createdAt,
@@ -217,7 +272,7 @@ exports.updateAdmin = async (req, res) => {
     if (role) updateData.adminRole = role;
     if (permissions) updateData.adminPermissions = permissions;
     if (is_active !== undefined) updateData.isDeactivated = !is_active;
-
+    console.log(updateData.isDeactivated);
     await User.findByIdAndUpdate(admin_id, updateData);
 
     // Update profile if full_name provided

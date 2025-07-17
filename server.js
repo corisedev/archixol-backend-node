@@ -55,7 +55,7 @@ app.use("/supplier", require("./routes/settingsRoutes"));
 app.use("/chat", require("./routes/chatRoutes"));
 app.use("/client", require("./routes/clientRoutes"));
 app.use("/admin", require("./routes/adminRoutes"));
-
+app.use("/admin/content", require("./routes/adminContentRoutes"));
 app.use("/admin", require("./routes/adminRBACRoutes"));
 
 // WebSocket status endpoint

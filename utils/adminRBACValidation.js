@@ -226,6 +226,14 @@ exports.validateDeleteRole = [
     .withMessage("Invalid role ID format"),
 ];
 
+exports.validateGetAdmin = [
+  body("admin_id")
+    .notEmpty()
+    .withMessage("Admin ID is required")
+    .isMongoId()
+    .withMessage("Invalid admin ID format"),
+];
+
 // Validate get admin permissions request
 exports.validateGetAdminPermissions = [
   body("admin_id")

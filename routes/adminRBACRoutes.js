@@ -6,6 +6,7 @@ const router = express.Router();
 const {
   createAdmin,
   getAllAdmins,
+  getAdmin,
   updateAdmin,
   deleteAdmin,
   toggleAdminStatus,
@@ -32,6 +33,7 @@ const { decryptRequest } = require("../middleware/encryption");
 const {
   validateCreateAdmin,
   validateUpdateAdmin,
+  validateGetAdmin,
   validateDeleteAdmin,
   validateToggleAdminStatus,
   validateCreateRole,
@@ -167,6 +169,18 @@ router.post(
   requirePermission("manage_admin_roles"),
   decryptRequest,
   getRolePermissions
+);
+
+// @desc    Get specific admin details
+// @route   POST /admin/get_admin
+// @access  Private (Super Admin Only)
+router.post(
+  "/get_admin",
+  authorizeSuperAdmin,
+  decryptRequest,
+  validateGetAdmin,
+  validate,
+  getAdmin
 );
 
 module.exports = router;

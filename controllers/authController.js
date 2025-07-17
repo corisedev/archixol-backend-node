@@ -124,21 +124,17 @@ exports.login = [
       // ✅ GET ADMIN ROLE AND PERMISSIONS (NEW RBAC FEATURE)
       let roleAccess = null;
       if (user.isAdmin) {
+        console.log("Admin");
         try {
           const adminRole = await AdminRole.findOne({ name: user.adminRole });
 
-          if (adminRole) {
+          if (!user.isSuperAdmin) {
             // Get all available permissions for reference
-            const allPermissions = AdminRole.getAllPermissions();
+            const allPermissions = user.adminPermissions;
 
             roleAccess = {
-              role: {
-                name: adminRole.name,
-                display_name: adminRole.display_name,
-                description: adminRole.description,
-              },
-              permissions:
-                user.adminPermissions || adminRole.default_permissions,
+              role: user.accessRoles,
+              permissions: user.adminPermissions,
               is_super_admin: user.isSuperAdmin,
               is_active: !user.isDeactivated,
               all_permissions: allPermissions, // For frontend reference
@@ -176,14 +172,14 @@ exports.login = [
         username: user.username,
         firstLogin: isFirstLogin,
         accessRoles: user.accessRoles,
-        isCompany: user.company || false,
+        isCompany: user.company,
         isVerify: user.user_type === "admin" ? true : user.isEmailVerified,
         fullname: userProfile ? userProfile.fullname : null,
         profile_img: userProfile ? userProfile.profile_img : "",
         // ✅ ADD ADMIN RBAC DATA
-        isAdmin: user.isAdmin || false,
-        isSuperAdmin: user.isSuperAdmin || false,
-        role_access: roleAccess, // This contains role and permissions data
+        isAdmin: user.isAdmin,
+        isSuperAdmin: user.isSuperAdmin,
+        permissions: user.adminPermissions || null, // This contains role and permissions data
       };
 
       const responseData = {
